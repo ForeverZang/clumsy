@@ -34,7 +34,10 @@ static BOOL flowKeyEqual(const FlowKey *a, const FlowKey *b) {
 }
 
 // Host-order check for 127.0.0.0/8 or ::1.
-static BOOL flowIsLoopback(const UINT32 addr[4]) {
+BOOL flowmapAddrIsLoopback(const UINT32 addr[4]) {
+    if (addr == NULL) {
+        return FALSE;
+    }
     if ((addr[0] & 0xFF000000u) == 0x7F000000u
         && addr[1] == 0 && addr[2] == 0 && addr[3] == 0) {
         return TRUE;
@@ -237,7 +240,8 @@ void flowmapKeyFromData(const WINDIVERT_DATA_FLOW *data, FlowKey *out) {
     }
     out->localPort = ntohs(data->LocalPort);
     out->remotePort = ntohs(data->RemotePort);
-    if (flowIsLoopback(out->localAddr) || flowIsLoopback(out->remoteAddr)) {
+    if (flowmapAddrIsLoopback(out->localAddr)
+        || flowmapAddrIsLoopback(out->remoteAddr)) {
         flowNormalizeLoopback(out);
     }
 }

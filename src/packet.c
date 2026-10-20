@@ -35,6 +35,12 @@ PacketNode* createNode(char* buf, UINT len, WINDIVERT_ADDRESS *addr) {
     memcpy(newNode->packet, buf, len);
     newNode->packetLen = len;
     memcpy(&(newNode->addr), addr, sizeof(WINDIVERT_ADDRESS));
+    // Parsing failure is not fatal: tupleValid stays FALSE and the
+    // targeting gate lets such packets pass through untouched.
+    newNode->tupleValid = pktparseTuple(newNode->packet, len,
+                                        &newNode->tuple)
+                              ? TRUE
+                              : FALSE;
     newNode->next = newNode->prev = NULL;
     return newNode;
 }

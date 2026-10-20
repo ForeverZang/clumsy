@@ -6,6 +6,7 @@
 #include "common.h"
 #include "divert.h"
 #include "flowwatch.h"
+#include "targeting.h"
 
 #define DIVERT_PRIORITY 0
 // SNIFF shares the NETWORK layer but never reinjects; a distinct priority
@@ -407,6 +408,41 @@ static DWORD divertSniffLoop(LPVOID arg) {
     }
 }
 
+// Production owner lookup: packet tuple -> normalized FlowKey -> pid.
+// Tuple words/ports are network order; loopback is therefore tested
+// byte-wise (127/8 first byte, ::1 low word 0x01000000 network order).
+static BOOL divertTargetingOwner(const PacketNode *node, UINT32 *outPid) {
+    PersistentSession *p = g_persist;
+    FlowKey key;
+    BOOL loopback;
+
+    if (p == NULL || !node->tupleValid) {
+        return FALSE;
+    }
+    if (node->tuple.ipv6) {
+        loopback = (node->tuple.aAddr[3] == htonl(1)
+                    && node->tuple.aAddr[0] == 0
+                    && node->tuple.aAddr[1] == 0
+                    && node->tuple.aAddr[2] == 0)
+                   || (node->tuple.bAddr[3] == htonl(1)
+                       && node->tuple.bAddr[0] == 0
+                       && node->tuple.bAddr[1] == 0
+                       && node->tuple.bAddr[2] == 0);
+    } else {
+        loopback = ((ntohl(node->tuple.aAddr[0]) & 0xFF000000u)
+                        == 0x7F000000u
+                    || (ntohl(node->tuple.bAddr[0]) & 0xFF000000u)
+                           == 0x7F000000u);
+    }
+    flowmapKeyFromPacket(node->tuple.protocol,
+                         node->addr.Outbound ? TRUE : FALSE,
+                         loopback,
+                         node->tuple.aAddr, node->tuple.aPort,
+                         node->tuple.bAddr, node->tuple.bPort,
+                         node->tuple.ipv6, &key);
+    return flowmapLookup(p->map, &key, outPid);
+}
+
 // ---------------------------------------------------------------------------
 // Lifecycle
 // ---------------------------------------------------------------------------
@@ -470,6 +506,7 @@ BOOL divertAttach(const char *kernelFilter, char err[MSG_BUFSIZE]) {
     }
 
     g_persist = p;
+    targetingSetOwnerLookup(divertTargetingOwner);
     LOG("Attached: FLOW watcher + SNIFF handle (filter: %s).", kernelFilter);
     return TRUE;
 }

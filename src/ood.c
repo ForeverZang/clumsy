@@ -1,6 +1,7 @@
 // out of order arrange packets module
 #include "iup.h"
 #include "common.h"
+#include "targeting.h"
 #define NAME "ood"
 // keep a picked packet at most for KEEP_TURNS_MAX steps, or if there's no following
 // one, it will just be sent
@@ -69,7 +70,7 @@ static PacketNode* nextCorrectDirectionNode(PacketNode *p) {
 
     do {
         p = p->next;
-    } while (p->next != NULL && !checkDirection(p->addr.Outbound, oodInbound, oodOutbound));
+    } while (p->next != NULL && !shouldAffect(p, oodInbound, oodOutbound));
 
     return p->next == NULL ? NULL : p;
 }
@@ -112,7 +113,7 @@ static short oodProcess(PacketNode *head, PacketNode *tail) {
         PacketNode *pac = head->next;
         if (pac->next == tail) {
             // only contains a single packet, then pick it out and insert later
-            if (checkDirection(pac->addr.Outbound, oodInbound, oodOutbound) && calcChance(chance)) {
+            if (shouldAffect(pac, oodInbound, oodOutbound) && calcChance(chance)) {
                 oodPacket = popNode(pac);
                 LOG("Ooo picked packet w/ chance %.1f%%, direction %s", chance/100.0, pac->addr.Outbound ? "OUTBOUND" : "INBOUND");
                 return TRUE;

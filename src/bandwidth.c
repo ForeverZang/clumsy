@@ -5,6 +5,7 @@
 
 #include "iup.h"
 #include "common.h"
+#include "targeting.h"
 
 #define NAME "bandwidth"
 #define BANDWIDTH_MIN  "0"
@@ -117,7 +118,7 @@ static short bandwidthProcess(PacketNode *head, PacketNode* tail) {
         PacketNode *pac = head->next;
 		int discard = 0;
         // chance in range of [0, 10000]
-        if (checkDirection(pac->addr.Outbound, bandwidthInbound, bandwidthOutbound)) {
+        if (shouldAffect(pac, bandwidthInbound, bandwidthOutbound)) {
 			int rate = crate_stats_calculate(rateStats, now_ts);
 			int size = pac->packetLen;
 			if (rate + size > limit) {

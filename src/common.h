@@ -1,6 +1,8 @@
 #pragma once
 #include <stdio.h>
 #include <assert.h>
+// winsock2 must be included before iup.h/windows.h
+#include "pktparse.h"
 #include "iup.h"
 #include "windivert.h"
 
@@ -97,6 +99,8 @@ typedef struct _NODE {
     char *packet;
     UINT packetLen;
     WINDIVERT_ADDRESS addr;
+    PacketTuple tuple;  // parsed 5-tuple, valid when tupleValid == TRUE
+    BOOL tupleValid;
     DWORD timestamp; // ! timestamp isn't filled when creating node since it's only needed for lag
     struct _NODE *prev, *next;
 } PacketNode;
@@ -166,13 +170,6 @@ void showStatus(const char* line);
 #define STR(x) STR_HELPER(x)
 
 short calcChance(short chance);
-
-// inline helper for inbound outbound check
-static INLINE_FUNCTION
-BOOL checkDirection(BOOL outboundPacket, short handleInbound, short handleOutbound) {
-    return (handleInbound && !outboundPacket) || (handleOutbound && outboundPacket);
-}
-
 
 // wraped timeBegin/EndPeriod to keep calling safe and end when exit
 #define TIMER_RESOLUTION 4

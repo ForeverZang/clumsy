@@ -1,6 +1,7 @@
 // throttling packets
 #include "iup.h"
 #include "common.h"
+#include "targeting.h"
 #define NAME "throttle"
 #define TIME_MIN "0"
 #define TIME_MAX "1000"
@@ -131,7 +132,7 @@ THROTTLE_START:
             PacketNode *pac = tail->prev;
             DWORD currentTick = timeGetTime();
             while (bufSize < KEEP_AT_MOST && pac != head) {
-                if (checkDirection(pac->addr.Outbound, throttleInbound, throttleOutbound)) {
+                if (shouldAffect(pac, throttleInbound, throttleOutbound)) {
                     insertAfter(popNode(pac), bufHead);
                     ++bufSize;
                     pac = tail->prev;

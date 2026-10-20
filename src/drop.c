@@ -3,6 +3,7 @@
 #include <Windows.h>
 #include "iup.h"
 #include "common.h"
+#include "targeting.h"
 #define NAME "drop"
 
 static Ihandle *inboundCheckbox, *outboundCheckbox, *chanceInput;
@@ -58,7 +59,7 @@ static short dropProcess(PacketNode *head, PacketNode* tail) {
     while (head->next != tail) {
         PacketNode *pac = head->next;
         // chance in range of [0, 10000]
-        if (checkDirection(pac->addr.Outbound, dropInbound, dropOutbound)
+        if (shouldAffect(pac, dropInbound, dropOutbound)
             && calcChance(chance)) {
             LOG("dropped with chance %.1f%%, direction %s",
                 chance/100.0, pac->addr.Outbound ? "OUTBOUND" : "INBOUND");

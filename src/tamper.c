@@ -2,6 +2,7 @@
 #include "iup.h"
 #include "windivert.h"
 #include "common.h"
+#include "targeting.h"
 #define NAME "tamper"
 
 static Ihandle *inboundCheckbox, *outboundCheckbox, *chanceInput, *checksumCheckbox;
@@ -87,7 +88,7 @@ static short tamperProcess(PacketNode *head, PacketNode *tail) {
     short tampered = FALSE;
     PacketNode *pac = head->next;
     while (pac != tail) {
-        if (checkDirection(pac->addr.Outbound, tamperInbound, tamperOutbound)
+        if (shouldAffect(pac, tamperInbound, tamperOutbound)
             && calcChance(chance)) {
             char *data = NULL;
             UINT dataLen = 0;

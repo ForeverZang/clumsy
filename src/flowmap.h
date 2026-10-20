@@ -34,6 +34,11 @@ BOOL     flowmapLookup(const FlowMap *map, const FlowKey *key, UINT32 *outPid);
 // Drop every flow owned by a process (process exit cleanup).
 void     flowmapRemovePid(FlowMap *map, UINT32 pid);
 
+// Host-order test for 127.0.0.0/8 or ::1 over the 4-word (v4 zero-padded)
+// address form used by FlowKey. PacketTuple words are network order and
+// must be converted (or tested byte-wise) by the caller.
+BOOL     flowmapAddrIsLoopback(const UINT32 addr[4]);
+
 // Build a normalized key from a FLOW-layer event record. Input addresses
 // and ports are in network byte order as WinDivert reports them.
 void     flowmapKeyFromData(const WINDIVERT_DATA_FLOW *data, FlowKey *out);

@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include "iup.h"
 #include "common.h"
+#include "targeting.h"
 #define NAME "reset"
 
 static const unsigned int TCP_MIN_SIZE = sizeof(WINDIVERT_IPHDR) + sizeof(WINDIVERT_TCPHDR);
@@ -76,7 +77,7 @@ static short resetProcess(PacketNode *head, PacketNode *tail) {
     short reset = FALSE;
     PacketNode *pac = head->next;
     while (pac != tail) {
-        if (checkDirection(pac->addr.Outbound, resetInbound, resetOutbound)
+        if (shouldAffect(pac, resetInbound, resetOutbound)
             && pac->packetLen > TCP_MIN_SIZE
             && (setNextCount || calcChance(chance)))
         {
