@@ -15,9 +15,10 @@
 
 ```bash
 mkdir -p build/tests
-gcc -std=gnu11 -g -Wall -Iexternal/WinDivert-2.2.0-A/include \
+gcc -std=gnu11 -g -Wall -Iexternal/WinDivert-2.2.0-A/include -Isrc \
     tests/test_<name>.c src/<name>.c \
     external/WinDivert-2.2.0-A/x64/WinDivert.dll \
+    -lws2_32 -liphlpapi \
     -o build/tests/test_<name>.exe
 ./build/tests/test_<name>.exe
 ```
