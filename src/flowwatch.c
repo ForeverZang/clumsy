@@ -1,6 +1,7 @@
 #include "flowwatch.h"
 
 #include <stdlib.h>
+#include <string.h>
 
 #define FLOW_FILTER "tcp or udp"
 #define FLOW_PRIORITY 1
@@ -12,6 +13,8 @@ struct FlowWatch {
     HANDLE   flowThread;
     HANDLE   seedThread;
     HANDLE   stopEvent;
+    FlowKey *seedKeys;
+    size_t   seedCount;
 };
 
 // Loopback detection on network-order address words (as IP Helper and
@@ -28,23 +31,70 @@ static BOOL seedIsLoopback(const UINT32 addr[4]) {
     return FALSE;
 }
 
+static void seedKeyFor(const ProcEndpoint *ep, FlowKey *key) {
+    // Snapshot rows are always local to this host: pretend an
+    // outbound packet; loopback normalization ignores direction.
+    flowmapKeyFromPacket(ep->protocol, TRUE,
+                         seedIsLoopback(ep->localAddr),
+                         ep->localAddr, ep->localPort,
+                         ep->remoteAddr, ep->remotePort,
+                         FALSE, key);
+}
+
 void flowwatchSeedFromEndpoints(FlowMap *map, const ProcEndpoint *eps,
                                 size_t count) {
     if (map == NULL || eps == NULL) {
         return;
     }
     for (size_t i = 0; i < count; i++) {
-        const ProcEndpoint *ep = &eps[i];
         FlowKey key;
-        // Snapshot rows are always local to this host: pretend an
-        // outbound packet; loopback normalization ignores direction.
-        flowmapKeyFromPacket(ep->protocol, TRUE,
-                             seedIsLoopback(ep->localAddr),
-                             ep->localAddr, ep->localPort,
-                             ep->remoteAddr, ep->remotePort,
-                             FALSE, &key);
-        flowmapUpsert(map, &key, ep->pid);
+        seedKeyFor(&eps[i], &key);
+        flowmapUpsert(map, &key, eps[i].pid);
     }
+}
+
+// Raw byte order on FlowKey gives a consistent total order because every
+// key is zero-initialized (no uninitialized padding); used for bsearch.
+static int seedKeyCmp(const void *a, const void *b) {
+    return memcmp(a, b, sizeof(FlowKey));
+}
+
+void flowwatchReconcileSeeds(FlowMap *map, FlowKey **ioKeys, size_t *ioCount,
+                             const ProcEndpoint *eps, size_t count) {
+    if (map == NULL || ioKeys == NULL || ioCount == NULL) {
+        return;
+    }
+    FlowKey *oldKeys = *ioKeys;
+    size_t oldCount = *ioCount;
+
+    FlowKey *newKeys = NULL;
+    if (count > 0) {
+        newKeys = malloc(sizeof(FlowKey) * count);
+        if (newKeys == NULL) {
+            // Keep the previous cycle: fail open, retry next cycle.
+            return;
+        }
+        for (size_t i = 0; i < count; i++) {
+            seedKeyFor(&eps[i], &newKeys[i]);
+        }
+        qsort(newKeys, count, sizeof(FlowKey), seedKeyCmp);
+    }
+
+    // Retire keys no longer backed by a live endpoint. FLOW-event entries
+    // sharing a key with a dead row are removed as well: with the socket
+    // gone there is nothing to attribute anymore.
+    for (size_t i = 0; i < oldCount; i++) {
+        if (bsearch(&oldKeys[i], newKeys, count, sizeof(FlowKey),
+                    seedKeyCmp) == NULL) {
+            flowmapRemove(map, &oldKeys[i]);
+        }
+    }
+
+    flowwatchSeedFromEndpoints(map, eps, count);
+
+    free(oldKeys);
+    *ioKeys = newKeys;
+    *ioCount = count;
 }
 
 static DWORD WINAPI flowEventLoop(LPVOID arg) {
@@ -77,7 +127,8 @@ static DWORD WINAPI seedLoop(LPVOID arg) {
         ProcEndpoint *eps = NULL;
         size_t count = 0;
         if (procmapSnapshotEndpoints(&eps, &count)) {
-            flowwatchSeedFromEndpoints(fw->map, eps, count);
+            flowwatchReconcileSeeds(fw->map, &fw->seedKeys, &fw->seedCount,
+                                    eps, count);
             procmapFree(eps);
         }
     }
@@ -142,5 +193,6 @@ void flowwatchStop(FlowWatch *fw) {
         WinDivertClose(fw->flowHandle);
     }
     CloseHandle(fw->stopEvent);
+    free(fw->seedKeys);
     free(fw);
 }

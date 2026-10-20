@@ -7,6 +7,7 @@
 #include "divert.h"
 #include "flowwatch.h"
 #include "targeting.h"
+#include "simple.h"
 
 #define DIVERT_PRIORITY 0
 // SNIFF shares the NETWORK layer but never reinjects; a distinct priority
@@ -217,6 +218,22 @@ static void divertConsumeStep(HANDLE handle) {
                 module->lastEnabled = 0;
             }
         }
+        // Beginner one-slider runs after lag (modules[0]) and before drop
+        // (modules[1]): reordering queues first, then hard disconnect.
+        if (ix == 0) {
+            if (*(simpleModule.enabledFlag)) {
+                if (!simpleModule.lastEnabled) {
+                    simpleModule.startUp();
+                    simpleModule.lastEnabled = 1;
+                }
+                if (simpleModule.process(head, tail)) {
+                    InterlockedIncrement16(&(simpleModule.processTriggered));
+                }
+            } else if (simpleModule.lastEnabled) {
+                simpleModule.closeDown(head, tail);
+                simpleModule.lastEnabled = 0;
+            }
+        }
     }
     cnt = sendAllListPackets(handle);
 #ifdef _DEBUG
@@ -236,6 +253,10 @@ static void divertFinalFlush(AffectSession *a) {
         Module *module = modules[ix];
         if (*(module->enabledFlag)) {
             module->closeDown(head, tail);
+        }
+        if (ix == 0 && *(simpleModule.enabledFlag)) {
+            simpleModule.closeDown(head, tail);
+            simpleModule.lastEnabled = 0;
         }
     }
     LOG("Send all packets upon closing");
@@ -440,7 +461,21 @@ static BOOL divertTargetingOwner(const PacketNode *node, UINT32 *outPid) {
                          node->tuple.aAddr, node->tuple.aPort,
                          node->tuple.bAddr, node->tuple.bPort,
                          node->tuple.ipv6, &key);
-    return flowmapLookup(p->map, &key, outPid);
+    if (flowmapLookup(p->map, &key, outPid)) {
+        return TRUE;
+    }
+    // Unconnected UDP: no FLOW event / matching 5-tuple yet. Fall back to
+    // the authoritative local socket endpoint. Never for TCP: listening
+    // rows must not wildcard-claim another process's inbound connection.
+    if (node->tuple.protocol == IPPROTO_UDP) {
+        return flowmapLookupUdpLocal(p->map,
+                                     node->addr.Outbound ? TRUE : FALSE,
+                                     loopback,
+                                     node->tuple.aAddr, node->tuple.aPort,
+                                     node->tuple.bAddr, node->tuple.bPort,
+                                     node->tuple.ipv6, outPid);
+    }
+    return FALSE;
 }
 
 // ---------------------------------------------------------------------------
@@ -594,6 +629,7 @@ BOOL divertStartAffect(const char *kernelFilter, char err[MSG_BUFSIZE]) {
     for (int ix = 0; ix < MODULE_CNT; ++ix) {
         modules[ix]->lastEnabled = 0;
     }
+    simpleModule.lastEnabled = 0;
 
     LOG("Creating threads and mutex...");
     a->mutex = CreateMutex(NULL, FALSE, NULL);

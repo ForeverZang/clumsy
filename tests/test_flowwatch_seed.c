@@ -126,6 +126,129 @@ static void testSeedsUdpListener(FlowMap *m) {
     flowwatchSeedFromEndpoints(NULL, eps, 1);
 }
 
+// Stale seeded keys must be removed when the endpoint snapshot changes,
+// so a reused local port cannot attribute one process's packets to
+// another; stable keys survive repeated cycles.
+static void testReconcileSeeds(FlowMap *m) {
+    ProcEndpoint first[2];
+    ProcEndpoint second[1];
+    FlowKey *keys = NULL;
+    size_t n = 0;
+    FlowKey k;
+
+    memset(first, 0, sizeof(first));
+    first[0].protocol = IPPROTO_TCP;
+    first[0].localAddr[0] = v4addr("192.168.1.20");
+    first[0].localPort = htons(51001);
+    first[0].remoteAddr[0] = v4addr("1.1.1.1");
+    first[0].remotePort = htons(443);
+    first[0].pid = 111;
+
+    first[1].protocol = IPPROTO_UDP;
+    first[1].localAddr[0] = v4addr("0.0.0.0");
+    first[1].localPort = htons(5353);
+    first[1].pid = 222;
+
+    flowwatchReconcileSeeds(m, &keys, &n, first, 2);
+    assert(n == 2);
+
+    // The stale UDP zero-remote key must match its local-end fallback.
+    UINT32 zero[4] = {0};
+    flowmapKeyLocalEnd(IPPROTO_UDP, FALSE, zero, htons(5353), FALSE, &k);
+    UINT32 pid = 0;
+    assert(flowmapLookup(m, &k, &pid) && pid == 222);
+
+    // Next cycle: the UDP endpoint is gone (socket closed).
+    second[0] = first[0];
+    flowwatchReconcileSeeds(m, &keys, &n, second, 1);
+    assert(n == 1);
+    FlowKey tcpK;
+    UINT32 local[4] = { v4addr("192.168.1.20") };
+    UINT32 remote[4] = { v4addr("1.1.1.1") };
+    flowmapKeyFromPacket(IPPROTO_TCP, TRUE, FALSE,
+                         local, htons(51001), remote, htons(443),
+                         FALSE, &tcpK);
+    assert(flowmapLookup(m, &tcpK, NULL)); // stable key retained
+    flowmapKeyLocalEnd(IPPROTO_UDP, FALSE, zero, htons(5353), FALSE, &k);
+    assert(!flowmapLookup(m, &k, NULL));    // stale key removed
+
+    // A third identical cycle changes nothing.
+    flowwatchReconcileSeeds(m, &keys, &n, second, 1);
+    assert(flowmapLookup(m, &tcpK, NULL));
+    flowwatchReconcileSeeds(m, &keys, &n, NULL, 0);
+    assert(n == 0 && keys == NULL);
+    assert(!flowmapLookup(m, &tcpK, NULL));
+}
+
+// A loopback UDP row with a zero remote is keyed with loopback
+// normalization like every other loopback entry.
+static void testLocalEndLoopback(FlowMap *m) {
+    ProcEndpoint eps[1];
+    memset(eps, 0, sizeof(eps));
+    eps[0].protocol = IPPROTO_UDP;
+    eps[0].localAddr[0] = v4addr("127.0.0.1");
+    eps[0].localPort = htons(7777);
+    eps[0].pid = 555;
+    flowwatchSeedFromEndpoints(m, eps, 1);
+
+    UINT32 loop[4] = { v4addr("127.0.0.1") };
+    FlowKey k;
+    flowmapKeyLocalEnd(IPPROTO_UDP, TRUE, loop, htons(7777), FALSE, &k);
+    UINT32 pid = 0;
+    assert(flowmapLookup(m, &k, &pid) && pid == 555);
+}
+
+// First packets of an unconnected UDP flow have no FLOW event and no
+// matching 5-tuple seed key; ownership must still resolve from the local
+// endpoint of the socket row. Concrete address and the 0.0.0.0 wildcard
+// both work, in both directions; loopback uses loopback normalization.
+static void testUdpLocalFallback(FlowMap *m) {
+    ProcEndpoint eps[2];
+    memset(eps, 0, sizeof(eps));
+    // Unconnected socket bound to the wildcard (as GetExtendedUdpTable
+    // reports it), packets actually leave from a concrete interface IP.
+    eps[0].protocol = IPPROTO_UDP;
+    eps[0].localAddr[0] = v4addr("0.0.0.0");
+    eps[0].localPort = htons(53000);
+    eps[0].pid = 777;
+    // Loopback datagram socket bound to 127.0.0.1.
+    eps[1].protocol = IPPROTO_UDP;
+    eps[1].localAddr[0] = v4addr("127.0.0.1");
+    eps[1].localPort = htons(7777);
+    eps[1].pid = 888;
+    flowwatchSeedFromEndpoints(m, eps, 2);
+
+    UINT32 pid = 0;
+    UINT32 ifAddr[4] = { v4addr("192.168.1.20") };
+    UINT32 dns[4] = { v4addr("8.8.8.8") };
+    // Outbound: local end is the source.
+    assert(flowmapLookupUdpLocal(m, TRUE, FALSE,
+                                 ifAddr, htons(53000), dns, htons(53),
+                                 FALSE, &pid) && pid == 777);
+    // Inbound reply: local end is the destination.
+    pid = 0;
+    assert(flowmapLookupUdpLocal(m, FALSE, FALSE,
+                                 dns, htons(53), ifAddr, htons(53000),
+                                 FALSE, &pid) && pid == 777);
+
+    // Loopback both directions.
+    UINT32 loop[4] = { v4addr("127.0.0.1") };
+    UINT32 other[4] = { v4addr("127.0.0.1") };
+    pid = 0;
+    assert(flowmapLookupUdpLocal(m, TRUE, TRUE,
+                                 loop, htons(7777), other, htons(9999),
+                                 FALSE, &pid) && pid == 888);
+    pid = 0;
+    assert(flowmapLookupUdpLocal(m, FALSE, TRUE,
+                                 other, htons(9999), loop, htons(7777),
+                                 FALSE, &pid) && pid == 888);
+
+    // Unknown local port: fail open, no pid.
+    assert(!flowmapLookupUdpLocal(m, TRUE, FALSE,
+                                  ifAddr, htons(59999), dns, htons(53),
+                                  FALSE, &pid));
+}
+
 int main(void) {
     FlowMap *m = flowmapCreate();
     assert(m != NULL);
@@ -133,6 +256,9 @@ int main(void) {
     testSeedsV6Udp(m);
     testSeedsLoopback(m);
     testSeedsUdpListener(m);
+    testReconcileSeeds(m);
+    testLocalEndLoopback(m);
+    testUdpLocalFallback(m);
     flowmapDestroy(m);
     printf("OK: flowwatch_seed\n");
     return 0;

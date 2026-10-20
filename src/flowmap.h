@@ -51,4 +51,22 @@ void     flowmapKeyFromPacket(UINT8 protocol, BOOL outbound, BOOL loopback,
                               const UINT32 *dstAddr, UINT16 dstPort,
                               BOOL ipv6, FlowKey *out);
 
+// Build the key for one local socket endpoint with no known remote end
+// (an unconnected UDP row). The result is exactly the key seeding produces
+// for a zero-remote IP Helper row, so the two match. Network byte order.
+void     flowmapKeyLocalEnd(UINT8 protocol, BOOL loopback,
+                            const UINT32 *localAddr, UINT16 localPort,
+                            BOOL ipv6, FlowKey *out);
+
+// First-packet UDP ownership: match a packet by its local endpoint alone,
+// covering datagrams sent before any FLOW event exists. Tries the concrete
+// local address and, off-loopback, the 0.0.0.0/:: wildcard an unconnected
+// socket is bound to. UDP ONLY: a TCP version would let listening rows
+// claim other processes' inbound connections.
+BOOL     flowmapLookupUdpLocal(const FlowMap *map, BOOL outbound,
+                               BOOL loopback,
+                               const UINT32 *srcAddr, UINT16 srcPort,
+                               const UINT32 *dstAddr, UINT16 dstPort,
+                               BOOL ipv6, UINT32 *outPid);
+
 #endif // CLUMSY_FLOWMAP_H

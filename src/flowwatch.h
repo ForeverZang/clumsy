@@ -23,4 +23,14 @@ void       flowwatchSeedFromEndpoints(FlowMap *map,
                                       const ProcEndpoint *endpoints,
                                       size_t count);
 
+// Replace the seed-key set with one snapshot cycle: upsert every endpoint
+// key and remove keys from earlier cycles that are gone, so a reused local
+// port can never attribute a new process's packets to the old owner.
+// *ioKeys/*ioCount is the cross-cycle state, initialized to NULL/0 by the
+// caller and freed/replaced here. Testable without any WinDivert handle.
+void       flowwatchReconcileSeeds(FlowMap *map,
+                                   FlowKey **ioKeys, size_t *ioCount,
+                                   const ProcEndpoint *endpoints,
+                                   size_t count);
+
 #endif // CLUMSY_FLOWWATCH_H

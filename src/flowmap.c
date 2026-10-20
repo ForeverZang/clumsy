@@ -259,3 +259,40 @@ void flowmapKeyFromPacket(UINT8 protocol, BOOL outbound, BOOL loopback,
     flowConvertEndpoints(out, srcAddr, srcPort, dstAddr, dstPort,
                          outbound, loopback);
 }
+
+void flowmapKeyLocalEnd(UINT8 protocol, BOOL loopback,
+                        const UINT32 *localAddr, UINT16 localPort,
+                        BOOL ipv6, FlowKey *out) {
+    static const UINT32 zeroAddr[4] = {0, 0, 0, 0};
+    // Same transform seeding uses for a zero-remote row.
+    flowmapKeyFromPacket(protocol, TRUE, loopback,
+                         localAddr, localPort, zeroAddr, 0, ipv6, out);
+}
+
+BOOL flowmapLookupUdpLocal(const FlowMap *map, BOOL outbound, BOOL loopback,
+                           const UINT32 *srcAddr, UINT16 srcPort,
+                           const UINT32 *dstAddr, UINT16 dstPort,
+                           BOOL ipv6, UINT32 *outPid) {
+    if (srcAddr == NULL || dstAddr == NULL) {
+        return FALSE;
+    }
+    const UINT32 *localAddr = outbound ? srcAddr : dstAddr;
+    UINT16 localPort = outbound ? srcPort : dstPort;
+    FlowKey key;
+    flowmapKeyLocalEnd(IPPROTO_UDP, loopback, localAddr, localPort,
+                       ipv6, &key);
+    if (flowmapLookup(map, &key, outPid)) {
+        return TRUE;
+    }
+    if (!loopback) {
+        // Unconnected UDP sockets are listed against 0.0.0.0/:: even
+        // though packets carry the concrete interface address.
+        static const UINT32 wildcard[4] = {0, 0, 0, 0};
+        flowmapKeyLocalEnd(IPPROTO_UDP, FALSE, wildcard, localPort,
+                           ipv6, &key);
+        if (flowmapLookup(map, &key, outPid)) {
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
