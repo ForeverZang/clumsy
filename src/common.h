@@ -158,9 +158,7 @@ extern volatile short sendState;
 // Iup GUI
 void showStatus(const char* line);
 
-// WinDivert
-int divertStart(const char * filter, char buf[]);
-void divertStop();
+// WinDivert lifecycle is declared in divert.h
 
 // utils
 // STR to convert int macro to string

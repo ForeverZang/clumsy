@@ -5,6 +5,7 @@
 #include <Windows.h>
 #include "iup.h"
 #include "common.h"
+#include "divert.h"
 
 // ! the order decides which module get processed first
 Module* modules[MODULE_CNT] = {
@@ -230,7 +231,7 @@ void init(int argc, char* argv[]) {
         )
     );
 
-    IupSetAttribute(dialog, "TITLE", "clumsy " CLUMSY_VERSION);
+    IupSetAttribute(dialog, "TITLE", "游戏流量控制器 v" CLUMSY_VERSION);
     IupSetAttribute(dialog, "SIZE", "480x"); // add padding manually to width
     IupSetAttribute(dialog, "RESIZE", "NO");
     IupSetCallback(dialog, "SHOW_CB", (Icallback)uiOnDialogShow);
