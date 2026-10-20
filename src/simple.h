@@ -15,4 +15,9 @@ extern Module simpleModule;
 // (basis points) to match calcChance: 0..10000, 10000 == 100%.
 void simpleSetLoss(short permyriad);
 
+// Flip the pipeline flag the beginner Start/Stop action controls. The
+// step stays registered in the processing chain at all times; while
+// disabled every packet passes it untouched.
+void simpleSetEnabled(BOOL enabled);
+
 #endif // CLUMSY_SIMPLE_H

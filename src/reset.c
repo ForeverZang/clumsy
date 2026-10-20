@@ -3,11 +3,13 @@
 #include "iup.h"
 #include "common.h"
 #include "targeting.h"
+#include "i18n.h"
 #define NAME "reset"
 
 static const unsigned int TCP_MIN_SIZE = sizeof(WINDIVERT_IPHDR) + sizeof(WINDIVERT_TCPHDR);
 
-static Ihandle *inboundCheckbox, *outboundCheckbox, *chanceInput, *rstButton;
+static Ihandle *inboundCheckbox, *outboundCheckbox, *chanceInput,
+    *rstButton, *chanceLabel;
 
 static volatile short resetEnabled = 0,
     resetInbound = 1, resetOutbound = 1,
@@ -29,13 +31,18 @@ static int resetSetRSTNextButtonCb(Ihandle *ih) {
 
 static Ihandle* resetSetupUI() {
     Ihandle *dupControlsBox = IupHbox(
-        rstButton = IupButton("RST next packet", NULL),
-        inboundCheckbox = IupToggle("Inbound", NULL),
-        outboundCheckbox = IupToggle("Outbound", NULL),
-        IupLabel("Chance(%):"),
+        rstButton = IupButton(tr("reset.rstNext"), NULL),
+        inboundCheckbox = IupToggle(tr("common.inbound"), NULL),
+        outboundCheckbox = IupToggle(tr("common.outbound"), NULL),
+        chanceLabel = IupLabel(tr("label.chance")),
         chanceInput = IupText(NULL),
         NULL
         );
+
+    i18nBind(rstButton, "TITLE", "reset.rstNext");
+    i18nBind(inboundCheckbox, "TITLE", "common.inbound");
+    i18nBind(outboundCheckbox, "TITLE", "common.outbound");
+    i18nBind(chanceLabel, "TITLE", "label.chance");
 
     IupSetAttribute(chanceInput, "VISIBLECOLUMNS", "4");
     IupSetAttribute(chanceInput, "VALUE", "0");

@@ -11,15 +11,116 @@ typedef struct {
     const char *en;
 } I18nEntry;
 
-// Seed rows for the mechanism; Task 11 expands the table and replaces the
-// literals in the UI. All text is UTF-8 (T11 enables IUP UTF8MODE).
+// Full UI vocabulary. All text is UTF-8 (main enables IUP UTF8MODE).
+// Rows containing printf specifiers keep them in the same order and
+// count in both languages (enforced by tests/test_i18n.c).
 static const I18nEntry g_table[] = {
+    // Window title and generic verbs
     {"app.title",       "游戏流量控制器", "Game Traffic Controller"},
     {"start",           "开始",           "Start"},
     {"stop",            "停止",           "Stop"},
-    {"direction.all",   "全部",           "All"},
+
+    // Beginner: direction segmented control
+    {"direction.all",   "全部",           "Both"},
     {"direction.in",    "流入（下载）",   "Inbound (download)"},
     {"direction.out",   "流出（上传）",   "Outbound (upload)"},
+
+    // Section 1: target application
+    {"section.app",     "① 目标应用",     "① Application"},
+    {"app.all",         "不限制应用",     "All applications"},
+    {"app.hint",        "只会影响选中的应用，其他程序正常上网",
+                        "Only the selected app is affected; everything else stays online"},
+    {"app.refresh",     "刷新",           "Refresh"},
+    {"app.lineProduct", "%s — %s（%u 个进程）",
+                        "%s — %s (%u processes)"},
+    {"app.line",        "%s（%u 个进程）", "%s (%u processes)"},
+
+    // Section 2: direction
+    {"section.direction", "② 流量方向",   "② Direction"},
+
+    // Section 3: network condition
+    {"section.condition", "③ 网络状况",   "③ Network condition"},
+    {"condition.kind",  "丢包 / 断网",    "Packet loss / disconnect"},
+    {"preset.normal",   "正常 0%",        "Normal 0%"},
+    {"preset.severe",   "严重丢包 95%",   "Severe 95%"},
+    {"preset.offline",  "完全断网 100%",  "Offline 100%"},
+    {"timer.enable",    "定时自动恢复",   "Auto-recover"},
+    {"timer.seconds",   "秒",             "seconds"},
+    {"timer.countdown", "剩余 %u 秒",     "%u s left"},
+    {"condition.hint",  "拖到 100% 就像拔掉网线：网页立刻打不开；中间数值是网页刷半天、偶尔能打开",
+                        "100% feels like an unplugged cable — pages fail instantly; mid values make pages crawl and sometimes load"},
+
+    // Section 4: live traffic chart
+    {"section.chart",       "④ 实时流量",       "④ Live traffic"},
+    {"section.chart.app",   "④ %s 实时流量",    "④ %s live traffic"},
+    {"chart.down",      "下载",           "Download"},
+    {"chart.up",        "上传",           "Upload"},
+    {"chart.before",    "开始前 ↓ %s　↑ %s", "Before ↓ %s  ↑ %s"},
+    {"chart.now",       "现在 ↓ %s　↑ %s",   "Now ↓ %s  ↑ %s"},
+
+    // Main action and status lines
+    {"action.start",            "开始影响", "Start"},
+    {"action.stop",             "停止影响", "Stop"},
+    {"status.ready",            "已就绪，请选择应用并开始",
+                                "Ready — pick an app and press Start"},
+    {"status.selectApp",        "请先选择一个应用",
+                                "Please select an application first"},
+    {"status.affecting",        "正在影响 %s", "Affecting %s"},
+    {"status.affectingCountdown", "正在影响 %s · 剩余 %u 秒",
+                                "Affecting %s · %u s left"},
+    {"status.stopped",          "已停止，应用恢复正常上网",
+                                "Stopped — the app is back online"},
+    {"error.needAdmin",         "需要管理员权限：请右键以管理员身份运行",
+                                "Administrator rights required: right-click clumsy and choose \"Run as administrator\""},
+    {"error.driver",            "WinDivert 驱动加载失败，请检查杀毒软件是否拦截",
+                                "The WinDivert driver failed to load; check that antivirus is not blocking it"},
+    {"error.generic",           "操作失败，请重试",
+                                "The operation failed, please try again"},
+
+    // Folded advanced section
+    {"advanced.toggle",     "高级功能", "Advanced"},
+    {"advanced.hint",       "延迟 · 节流 · 乱序 · 重复 · 篡改 · RST · 限速 · 自定义过滤器",
+                            "lag · throttle · out-of-order · duplicate · tamper · RST · bandwidth · custom filter"},
+    {"advanced.filtering",  "过滤",     "Filtering"},
+    {"advanced.functions",  "功能模块", "Functions"},
+    {"advanced.presets",    "预设：",   "Presets:"},
+    {"advanced.filterError", "过滤器语法有误，已忽略：%s",
+                            "Invalid filter syntax, ignored: %s"},
+    {"advanced.loopbackNotice",
+        "注意：捕获本机回环（loopback）数据包时，不能包含流入条件。\n"
+        "例如 'udp' 需写成 'udp and outbound' 才能生效，详见说明文档。",
+        "NOTICE: When capturing localhost (loopback) packets, you CAN'T include inbound criteria.\n"
+        "Filters like 'udp' need to be 'udp and outbound' to work. See readme for more info."},
+    // Interim advanced-surface status lines; the beginner status keys
+    // replace these once the simple window owns the status row.
+    {"advanced.started",
+        "已开始过滤，勾选下方功能模块即可生效。",
+        "Started filtering. Enable functionalities to take effect."},
+    {"advanced.stopped",
+        "已停止。修改条件后点击开始可再次运行。",
+        "Stopped. To begin again, edit criteria and click Start."},
+
+    // Advanced module display names (English stays unchanged)
+    {"mod.lag",        "延迟",     "Lag"},
+    {"mod.drop",       "丢包",     "Drop"},
+    {"mod.throttle",   "节流",     "Throttle"},
+    {"mod.ood",        "乱序",     "Out of order"},
+    {"mod.duplicate",  "重复",     "Duplicate"},
+    {"mod.tamper",     "篡改",     "Tamper"},
+    {"mod.reset",      "RST 重置", "Reset"},
+    {"mod.bandwidth",  "限速",     "Bandwidth"},
+
+    // Shared advanced control labels
+    {"common.inbound",         "流入",          "Inbound"},
+    {"common.outbound",        "流出",          "Outbound"},
+    {"label.chance",           "概率（%）：",   "Chance(%):"},
+    {"lag.delay",              "延迟（毫秒）：", "Delay(ms):"},
+    {"throttle.timeframe",     "时间窗口（毫秒）：", "Timeframe(ms):"},
+    {"throttle.dropThrottled", "丢弃被节流的包", "Drop Throttled"},
+    {"tamper.redoChecksum",    "重算校验和",    "Redo Checksum"},
+    {"reset.rstNext",          "立即 RST 下一个包", "RST next packet"},
+    {"bandwidth.limit",        "限速（KB/s）：", "Limit(KB/s):"},
+    {"duplicate.count",        "重复次数：",    "Count:"},
 };
 
 static Lang g_lang = LANG_EN;

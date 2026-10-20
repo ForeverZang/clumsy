@@ -164,6 +164,14 @@ int main(void) {
     simpleModule.closeDown(head, tail);
     simpleModule.closeDown(head, tail);
 
+    // 7. simpleSetEnabled flips the flag the pipeline reads.
+    simpleSetEnabled(FALSE);
+    assert(*simpleModule.enabledFlag == 0);
+    simpleSetEnabled(TRUE);
+    assert(*simpleModule.enabledFlag != 0);
+    simpleSetEnabled(FALSE);
+    assert(*simpleModule.enabledFlag == 0);
+
     targetingClear();
     printf("OK: simple\n");
     return 0;

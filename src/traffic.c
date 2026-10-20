@@ -1,5 +1,6 @@
 // 60-second byte-rate ring plus its self-drawn IupCanvas sparkline.
 #include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "traffic.h"
@@ -103,6 +104,59 @@ BOOL trafficStartColumn(const Traffic *t, int *outColumn) {
     }
     *outColumn = TRAFFIC_BUCKETS - 1 - (int)age;
     return TRUE;
+}
+
+void trafficFormatRate(UINT64 bytesPerSec, char *out, size_t cap) {
+    static const UINT64 KILO = 1024;
+    static const UINT64 MEGA = 1024 * 1024;
+    if (out == NULL || cap == 0) {
+        return;
+    }
+    if (bytesPerSec < KILO) {
+        snprintf(out, cap, "%llu B/s", (unsigned long long)bytesPerSec);
+    } else if (bytesPerSec < MEGA) {
+        snprintf(out, cap, "%.1f KB/s", (double)bytesPerSec / KILO);
+    } else {
+        snprintf(out, cap, "%.1f MB/s", (double)bytesPerSec / MEGA);
+    }
+}
+
+void trafficRecentAverage(const Traffic *t, int seconds,
+                          UINT64 *outDown, UINT64 *outUp) {
+    int available;
+    int count;
+    int slot;
+    int i;
+    UINT64 sumDown = 0;
+    UINT64 sumUp = 0;
+
+    if (outDown != NULL) {
+        *outDown = 0;
+    }
+    if (outUp != NULL) {
+        *outUp = 0;
+    }
+    if (t == NULL || outDown == NULL || outUp == NULL || seconds <= 0) {
+        return;
+    }
+    // Only completed buckets that have actually lived count: the window
+    // is clipped by both the requested seconds and the elapsed tick count,
+    // and the live bucket at head is excluded.
+    available = (int)(t->ticks < TRAFFIC_BUCKETS - 1
+                          ? t->ticks
+                          : TRAFFIC_BUCKETS - 1);
+    count = seconds < available ? seconds : available;
+    if (count == 0) {
+        return;
+    }
+    slot = t->head;
+    for (i = 0; i < count; i++) {
+        slot = (slot - 1 + TRAFFIC_BUCKETS) % TRAFFIC_BUCKETS;
+        sumDown += t->ring[slot].down;
+        sumUp += t->ring[slot].up;
+    }
+    *outDown = sumDown / (UINT64)count;
+    *outUp = sumUp / (UINT64)count;
 }
 
 // ---------------------------------------------------------------------------

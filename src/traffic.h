@@ -28,6 +28,15 @@ void     trafficMarkStart(Traffic *t);
 // when no marker exists or it has scrolled past the left edge.
 BOOL     trafficStartColumn(const Traffic *t, int *outColumn);
 
+// Human-readable byte rate, e.g. "0 B/s", "999 B/s", "1.5 KB/s", "10.0 MB/s".
+void     trafficFormatRate(UINT64 bytesPerSec, char *out, size_t cap);
+
+// Mean bytes/sec over up to `seconds` completed buckets immediately before
+// the live (still accumulating) bucket. Clipped by elapsed ticks, so a
+// fresh ring reports 0/0 instead of an ancient-zero average.
+void     trafficRecentAverage(const Traffic *t, int seconds,
+                              UINT64 *outDown, UINT64 *outUp);
+
 // Self-drawn IupCanvas: blue download / green upload polylines and a red
 // dashed start marker. Repaint with IupUpdate() after each tick.
 Ihandle* trafficCreateCanvas(Traffic *t);

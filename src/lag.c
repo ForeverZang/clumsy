@@ -2,6 +2,7 @@
 #include "iup.h"
 #include "common.h"
 #include "targeting.h"
+#include "i18n.h"
 #define NAME "lag"
 #define LAG_MIN "0"
 #define LAG_MAX "15000"
@@ -11,7 +12,8 @@
 #define LAG_DEFAULT 50
 
 // don't need a chance
-static Ihandle *inboundCheckbox, *outboundCheckbox, *timeInput;
+static Ihandle *inboundCheckbox, *outboundCheckbox, *timeInput,
+    *delayLabel;
 
 static volatile short lagEnabled = 0,
     lagInbound = 1,
@@ -30,12 +32,16 @@ static INLINE_FUNCTION short isBufEmpty() {
 
 static Ihandle *lagSetupUI() {
     Ihandle *lagControlsBox = IupHbox(
-        inboundCheckbox = IupToggle("Inbound", NULL),
-        outboundCheckbox = IupToggle("Outbound", NULL),
-        IupLabel("Delay(ms):"),
+        inboundCheckbox = IupToggle(tr("common.inbound"), NULL),
+        outboundCheckbox = IupToggle(tr("common.outbound"), NULL),
+        delayLabel = IupLabel(tr("lag.delay")),
         timeInput = IupText(NULL),
         NULL
         );
+
+    i18nBind(inboundCheckbox, "TITLE", "common.inbound");
+    i18nBind(outboundCheckbox, "TITLE", "common.outbound");
+    i18nBind(delayLabel, "TITLE", "lag.delay");
 
     IupSetAttribute(timeInput, "VISIBLECOLUMNS", "4");
     IupSetAttribute(timeInput, "VALUE", STR(LAG_DEFAULT));

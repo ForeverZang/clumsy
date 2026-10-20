@@ -45,6 +45,9 @@ typedef struct {
 
 static PersistentSession *g_persist = NULL;
 static AffectSession *g_affect = NULL;
+// Running-chart hook: set by the UI, fired only after a full-length
+// successful WinDivertSend so the chart counts bytes that really survived.
+static volatile SniffObserver g_reinjectObserver = NULL;
 
 static DWORD divertReadLoop(LPVOID arg);
 static DWORD divertClockLoop(LPVOID arg);
@@ -123,6 +126,14 @@ static void divertFormatOpenError(DWORD lastError, char buf[MSG_BUFSIZE]) {
 // Module pipeline (intercept session only)
 // ---------------------------------------------------------------------------
 
+static void notifyReinjected(PacketNode *pnode) {
+    SniffObserver cb = (SniffObserver)InterlockedCompareExchangePointer(
+        (PVOID volatile *)&g_reinjectObserver, NULL, NULL);
+    if (cb != NULL) {
+        cb(pnode->packet, pnode->packetLen, &pnode->addr);
+    }
+}
+
 static int sendAllListPackets(HANDLE handle) {
     // send packet from tail to head and remove sent ones
     int sendCount = 0;
@@ -172,6 +183,9 @@ static int sendAllListPackets(HANDLE handle) {
                 }
                 resent = WinDivertSend(handle, pnode->packet, pnode->packetLen, &sendLen, &(pnode->addr));
                 LOG("Resend failed inbound ICMP packets as outbound: %s", resent ? "SUCCESS" : "FAIL");
+                if (resent && sendLen == pnode->packetLen) {
+                    notifyReinjected(pnode);
+                }
                 InterlockedExchange16(&sendState, SEND_STATUS_SEND);
             } else {
                 InterlockedExchange16(&sendState, SEND_STATUS_FAIL);
@@ -182,6 +196,7 @@ static int sendAllListPackets(HANDLE handle) {
                 LOG("Internal Error: DivertSend truncated send packet.");
                 InterlockedExchange16(&sendState, SEND_STATUS_FAIL);
             } else {
+                notifyReinjected(pnode);
                 InterlockedExchange16(&sendState, SEND_STATUS_SEND);
             }
         }
@@ -581,6 +596,11 @@ void divertSetSniffObserver(SniffObserver observer) {
     }
 }
 
+void divertSetReinjectObserver(SniffObserver observer) {
+    InterlockedExchangePointer((PVOID volatile *)&g_reinjectObserver,
+                               (PVOID)observer);
+}
+
 // rollback after the intercept handle is open but startAffect failed.
 // recvStarted means its thread exists and must be shut down / joined.
 static void affectStartRollback(AffectSession *a, BOOL recvStarted) {
@@ -688,25 +708,4 @@ void divertStopAffect(void) {
 
 BOOL divertIsAffecting(void) {
     return g_affect != NULL;
-}
-
-// ---------------------------------------------------------------------------
-// Interim adapters for the pre-Task-11 UI contract.
-// Removed when the beginner UI lands.
-// ---------------------------------------------------------------------------
-
-int divertStart(const char *filter, char buf[]) {
-    if (!divertAttach("true", buf)) {
-        return FALSE;
-    }
-    if (!divertStartAffect(filter, buf)) {
-        divertDetach();
-        return FALSE;
-    }
-    return TRUE;
-}
-
-void divertStop(void) {
-    divertStopAffect();
-    divertDetach();
 }

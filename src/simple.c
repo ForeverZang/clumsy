@@ -20,6 +20,10 @@ void simpleSetLoss(short permyriad) {
     InterlockedExchange16(&loss, permyriad);
 }
 
+void simpleSetEnabled(BOOL enabled) {
+    InterlockedExchange16(&simpleEnabled, (short)(enabled ? 1 : 0));
+}
+
 static void simpleStartUp(void) {
     LOG("simple loss enabled at %.1f%%", loss / 100.0);
 }

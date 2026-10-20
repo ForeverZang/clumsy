@@ -3,9 +3,11 @@
 #include "windivert.h"
 #include "common.h"
 #include "targeting.h"
+#include "i18n.h"
 #define NAME "tamper"
 
-static Ihandle *inboundCheckbox, *outboundCheckbox, *chanceInput, *checksumCheckbox;
+static Ihandle *inboundCheckbox, *outboundCheckbox, *chanceInput,
+    *checksumCheckbox, *chanceLabel;
 
 static volatile short tamperEnabled = 0,
     tamperInbound = 1,
@@ -15,13 +17,18 @@ static volatile short tamperEnabled = 0,
 
 static Ihandle* tamperSetupUI() {
     Ihandle *dupControlsBox = IupHbox(
-        checksumCheckbox = IupToggle("Redo Checksum", NULL),
-        inboundCheckbox = IupToggle("Inbound", NULL),
-        outboundCheckbox = IupToggle("Outbound", NULL),
-        IupLabel("Chance(%):"),
+        checksumCheckbox = IupToggle(tr("tamper.redoChecksum"), NULL),
+        inboundCheckbox = IupToggle(tr("common.inbound"), NULL),
+        outboundCheckbox = IupToggle(tr("common.outbound"), NULL),
+        chanceLabel = IupLabel(tr("label.chance")),
         chanceInput = IupText(NULL),
         NULL
         );
+
+    i18nBind(checksumCheckbox, "TITLE", "tamper.redoChecksum");
+    i18nBind(inboundCheckbox, "TITLE", "common.inbound");
+    i18nBind(outboundCheckbox, "TITLE", "common.outbound");
+    i18nBind(chanceLabel, "TITLE", "label.chance");
 
     IupSetAttribute(chanceInput, "VISIBLECOLUMNS", "4");
     IupSetAttribute(chanceInput, "VALUE", "10.0");

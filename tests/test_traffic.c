@@ -4,6 +4,7 @@
 #include <winsock2.h>
 #include <windows.h>
 #include <stdio.h>
+#include <string.h>
 #include <assert.h>
 
 #include "traffic.h"
@@ -83,6 +84,45 @@ int main(void) {
     assert(!trafficStartColumn(t, &col));
 
     trafficDestroy(t);
+
+    // 6. Rate formatting: automatic B/s, KB/s, MB/s with one decimal.
+    char rate[32];
+    trafficFormatRate(0, rate, sizeof(rate));
+    assert(strcmp(rate, "0 B/s") == 0);
+    trafficFormatRate(999, rate, sizeof(rate));
+    assert(strcmp(rate, "999 B/s") == 0);
+    trafficFormatRate(1024, rate, sizeof(rate));
+    assert(strcmp(rate, "1.0 KB/s") == 0);
+    trafficFormatRate(1536, rate, sizeof(rate));
+    assert(strcmp(rate, "1.5 KB/s") == 0);
+    trafficFormatRate(10u * 1024 * 1024, rate, sizeof(rate));
+    assert(strcmp(rate, "10.0 MB/s") == 0);
+
+    // 7. Recent average spans the N completed buckets before the live one
+    // and is capped by elapsed ticks (empty history is zero, not an
+    // ancient-zero average).
+    t = trafficNew();
+    UINT64 avgDown = 999, avgUp = 999;
+    trafficRecentAverage(t, 10, &avgDown, &avgUp);
+    assert(avgDown == 0 && avgUp == 0); // no ticks yet
+    trafficRecord(t, 300, FALSE);
+    trafficRecord(t, 100, TRUE);
+    trafficTick(t);
+    // live bucket excluded; its older neighbour holds 300/100
+    trafficRecentAverage(t, 10, &avgDown, &avgUp);
+    assert(avgDown == 300 && avgUp == 100);
+    // three more identical completed seconds: data accumulates in the
+    // live bucket, then the tick rolls it over (the production rhythm)
+    trafficRecord(t, 300, FALSE); trafficRecord(t, 100, TRUE); trafficTick(t);
+    trafficRecord(t, 300, FALSE); trafficRecord(t, 100, TRUE); trafficTick(t);
+    trafficRecord(t, 300, FALSE); trafficRecord(t, 100, TRUE); trafficTick(t);
+    trafficRecentAverage(t, 10, &avgDown, &avgUp);
+    assert(avgDown == 300 && avgUp == 100);
+    // the window clips to the requested number of seconds
+    trafficRecentAverage(t, 2, &avgDown, &avgUp);
+    assert(avgDown == 300 && avgUp == 100);
+    trafficDestroy(t);
+
     printf("OK: traffic\n");
     return 0;
 }

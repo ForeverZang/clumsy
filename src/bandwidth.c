@@ -6,6 +6,7 @@
 #include "iup.h"
 #include "common.h"
 #include "targeting.h"
+#include "i18n.h"
 
 #define NAME "bandwidth"
 #define BANDWIDTH_MIN  "0"
@@ -44,7 +45,8 @@ int32_t crate_stats_calculate(CRateStats *rate, uint32_t now_ts);
 //---------------------------------------------------------------------
 // configuration
 //---------------------------------------------------------------------
-static Ihandle *inboundCheckbox, *outboundCheckbox, *bandwidthInput;
+static Ihandle *inboundCheckbox, *outboundCheckbox, *bandwidthInput,
+    *limitLabel;
 
 static volatile short bandwidthEnabled = 0,
     bandwidthInbound = 1, bandwidthOutbound = 1;
@@ -55,12 +57,16 @@ static CRateStats *rateStats = NULL;
 
 static Ihandle* bandwidthSetupUI() {
     Ihandle *bandwidthControlsBox = IupHbox(
-        inboundCheckbox = IupToggle("Inbound", NULL),
-        outboundCheckbox = IupToggle("Outbound", NULL),
-        IupLabel("Limit(KB/s):"),
+        inboundCheckbox = IupToggle(tr("common.inbound"), NULL),
+        outboundCheckbox = IupToggle(tr("common.outbound"), NULL),
+        limitLabel = IupLabel(tr("bandwidth.limit")),
         bandwidthInput = IupText(NULL),
         NULL
     );
+
+    i18nBind(inboundCheckbox, "TITLE", "common.inbound");
+    i18nBind(outboundCheckbox, "TITLE", "common.outbound");
+    i18nBind(limitLabel, "TITLE", "bandwidth.limit");
 
     IupSetAttribute(bandwidthInput, "VISIBLECOLUMNS", "4");
     IupSetAttribute(bandwidthInput, "VALUE", STR(BANDWIDTH_DEFAULT));

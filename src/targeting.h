@@ -33,4 +33,12 @@ void targetingSetDirection(short in, short out);
 // global direction intersected with the module's own direction check.
 BOOL shouldAffect(const PacketNode *node, short modIn, short modOut);
 
+// Chart-membership test on a raw captured packet: ownership only, with no
+// direction gate and no software filter. The live traffic chart must show
+// both directions of the selected app regardless of the current step
+// settings. No target selected short-circuits TRUE; malformed/unowned
+// packets return FALSE.
+BOOL targetingOwnsPacket(const char *packet, UINT packetLen,
+                         const WINDIVERT_ADDRESS *addr);
+
 #endif // CLUMSY_TARGETING_H

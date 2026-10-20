@@ -3,12 +3,14 @@
 #include "iup.h"
 #include "common.h"
 #include "targeting.h"
+#include "i18n.h"
 #define NAME "duplicate"
 #define COPIES_MIN "2"
 #define COPIES_MAX "50"
 #define COPIES_COUNT 2
 
-static Ihandle *inboundCheckbox, *outboundCheckbox, *chanceInput, *countInput;
+static Ihandle *inboundCheckbox, *outboundCheckbox, *chanceInput,
+    *countInput, *countLabel, *chanceLabel;
 
 static volatile short dupEnabled = 0,
     dupInbound = 1, dupOutbound = 1,
@@ -17,14 +19,19 @@ static volatile short dupEnabled = 0,
 
 static Ihandle* dupSetupUI() {
     Ihandle *dupControlsBox = IupHbox(
-        IupLabel("Count:"),
+        countLabel = IupLabel(tr("duplicate.count")),
         countInput = IupText(NULL),
-        inboundCheckbox = IupToggle("Inbound", NULL),
-        outboundCheckbox = IupToggle("Outbound", NULL),
-        IupLabel("Chance(%):"),
+        inboundCheckbox = IupToggle(tr("common.inbound"), NULL),
+        outboundCheckbox = IupToggle(tr("common.outbound"), NULL),
+        chanceLabel = IupLabel(tr("label.chance")),
         chanceInput = IupText(NULL),
         NULL
         );
+
+    i18nBind(countLabel, "TITLE", "duplicate.count");
+    i18nBind(inboundCheckbox, "TITLE", "common.inbound");
+    i18nBind(outboundCheckbox, "TITLE", "common.outbound");
+    i18nBind(chanceLabel, "TITLE", "label.chance");
 
     IupSetAttribute(chanceInput, "VISIBLECOLUMNS", "4");
     IupSetAttribute(chanceInput, "VALUE", "10.0");

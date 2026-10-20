@@ -31,9 +31,9 @@ typedef void (*SniffObserver)(const char *packet, UINT len,
 // Chart stats hook; pass NULL to clear. Called on the sniff thread.
 void divertSetSniffObserver(SniffObserver observer);
 
-// Interim wrappers preserving the old main.c contract until Task 11:
-// attach+affect / stop+detach. Removed in the UI rework task.
-int  divertStart(const char *filter, char buf[]);
-void divertStop(void);
+// Survivor-statistics hook fired on the session thread after a packet is
+// successfully reinjected with its full length. The running traffic chart
+// counts reinjected bytes; the idle chart uses the SNIFF observer.
+void divertSetReinjectObserver(SniffObserver observer);
 
 #endif // CLUMSY_DIVERT_H

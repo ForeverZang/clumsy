@@ -2,6 +2,7 @@
 #include "iup.h"
 #include "common.h"
 #include "targeting.h"
+#include "i18n.h"
 #define NAME "throttle"
 #define TIME_MIN "0"
 #define TIME_MAX "1000"
@@ -9,7 +10,8 @@
 // threshold for how many packet to throttle at most
 #define KEEP_AT_MOST 1000
 
-static Ihandle *inboundCheckbox, *outboundCheckbox, *chanceInput, *frameInput, *dropThrottledCheckbox;
+static Ihandle *inboundCheckbox, *outboundCheckbox, *chanceInput, *frameInput,
+    *dropThrottledCheckbox, *timeframeLabel, *chanceLabel;
 
 static volatile short throttleEnabled = 0,
     throttleInbound = 1, throttleOutbound = 1,
@@ -32,15 +34,21 @@ static INLINE_FUNCTION short isBufEmpty() {
 
 static Ihandle *throttleSetupUI() {
     Ihandle *throttleControlsBox = IupHbox(
-        dropThrottledCheckbox = IupToggle("Drop Throttled", NULL),
-        IupLabel("Timeframe(ms):"),
+        dropThrottledCheckbox = IupToggle(tr("throttle.dropThrottled"), NULL),
+        timeframeLabel = IupLabel(tr("throttle.timeframe")),
         frameInput = IupText(NULL),
-        inboundCheckbox = IupToggle("Inbound", NULL),
-        outboundCheckbox = IupToggle("Outbound", NULL),
-        IupLabel("Chance(%):"),
+        inboundCheckbox = IupToggle(tr("common.inbound"), NULL),
+        outboundCheckbox = IupToggle(tr("common.outbound"), NULL),
+        chanceLabel = IupLabel(tr("label.chance")),
         chanceInput = IupText(NULL),
         NULL
         );
+
+    i18nBind(dropThrottledCheckbox, "TITLE", "throttle.dropThrottled");
+    i18nBind(timeframeLabel, "TITLE", "throttle.timeframe");
+    i18nBind(inboundCheckbox, "TITLE", "common.inbound");
+    i18nBind(outboundCheckbox, "TITLE", "common.outbound");
+    i18nBind(chanceLabel, "TITLE", "label.chance");
 
     IupSetAttribute(chanceInput, "VISIBLECOLUMNS", "4");
     IupSetAttribute(chanceInput, "VALUE", "10.0");

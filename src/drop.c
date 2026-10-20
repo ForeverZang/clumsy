@@ -4,9 +4,11 @@
 #include "iup.h"
 #include "common.h"
 #include "targeting.h"
+#include "i18n.h"
 #define NAME "drop"
 
-static Ihandle *inboundCheckbox, *outboundCheckbox, *chanceInput;
+static Ihandle *inboundCheckbox, *outboundCheckbox, *chanceInput,
+    *chanceLabel;
 
 static volatile short dropEnabled = 0,
     dropInbound = 1, dropOutbound = 1,
@@ -15,12 +17,16 @@ static volatile short dropEnabled = 0,
 
 static Ihandle* dropSetupUI() {
     Ihandle *dropControlsBox = IupHbox(
-        inboundCheckbox = IupToggle("Inbound", NULL),
-        outboundCheckbox = IupToggle("Outbound", NULL),
-        IupLabel("Chance(%):"),
+        inboundCheckbox = IupToggle(tr("common.inbound"), NULL),
+        outboundCheckbox = IupToggle(tr("common.outbound"), NULL),
+        chanceLabel = IupLabel(tr("label.chance")),
         chanceInput = IupText(NULL),
         NULL
     );
+
+    i18nBind(inboundCheckbox, "TITLE", "common.inbound");
+    i18nBind(outboundCheckbox, "TITLE", "common.outbound");
+    i18nBind(chanceLabel, "TITLE", "label.chance");
 
     IupSetAttribute(chanceInput, "VISIBLECOLUMNS", "4");
     IupSetAttribute(chanceInput, "VALUE", "10.0");

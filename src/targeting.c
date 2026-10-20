@@ -4,6 +4,7 @@
 // procmap.h pulls in winsock2; include before targeting.h/windows.h
 #include "procmap.h"
 #include "targeting.h"
+#include "swfilter.h"
 
 // Beginner mode never tracks more than a handful of picked images.
 #define TARGET_MAX_IMAGES 32
@@ -300,7 +301,11 @@ void targetingSetDirection(short in, short out) {
     InterlockedExchange16(&g_dirOut, out);
 }
 
-BOOL shouldAffect(const PacketNode *node, short modIn, short modOut) {
+// Ownership-only leg shared by shouldAffect (intercept gate) and
+// targetingOwnsPacket (chart membership). No direction check, no software
+// filter. No target selected short-circuits TRUE; anything unparseable,
+// unowned, or owned by a different image returns FALSE.
+static BOOL ownsNode(const PacketNode *node) {
     TargetingOwnerFn ownerFn;
     TargetingPidNameFn nameFn;
     const ImageSet *images;
@@ -311,12 +316,6 @@ BOOL shouldAffect(const PacketNode *node, short modIn, short modOut) {
     BOOL matched = FALSE;
 
     if (node == NULL) {
-        return FALSE;
-    }
-    // Global direction intersects the module's own direction checkboxes.
-    if (!checkDirection(node->addr.Outbound,
-                        (short)(g_dirIn && modIn),
-                        (short)(g_dirOut && modOut))) {
         return FALSE;
     }
 
@@ -354,4 +353,40 @@ BOOL shouldAffect(const PacketNode *node, short modIn, short modOut) {
     }
     LeaveCriticalSection(&g_imageLock);
     return matched;
+}
+
+BOOL shouldAffect(const PacketNode *node, short modIn, short modOut) {
+    if (node == NULL) {
+        return FALSE;
+    }
+    // Global direction intersects the module's own direction checkboxes.
+    if (!checkDirection(node->addr.Outbound,
+                        (short)(g_dirIn && modIn),
+                        (short)(g_dirOut && modOut))) {
+        return FALSE;
+    }
+
+    // Advanced software filter is the final AND leg (spec 4.4): ownership
+    // gate AND text filter, both evaluated before any module runs. The
+    // filter is evaluated outside g_imageLock (it has its own state).
+    return ownsNode(node)
+           && swfilterMatch(node->packet, node->packetLen, &node->addr);
+}
+
+BOOL targetingOwnsPacket(const char *packet, UINT packetLen,
+                         const WINDIVERT_ADDRESS *addr) {
+    PacketNode node;
+
+    if (packet == NULL || addr == NULL || packetLen == 0) {
+        return FALSE;
+    }
+    memset(&node, 0, sizeof(node));
+    node.packet = (char *)packet;
+    node.packetLen = packetLen;
+    node.addr = *addr;
+    if (!pktparseTuple(packet, packetLen, &node.tuple)) {
+        return FALSE;
+    }
+    node.tupleValid = TRUE;
+    return ownsNode(&node);
 }
