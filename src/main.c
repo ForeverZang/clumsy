@@ -34,7 +34,8 @@ static Ihandle *simpleBox, *advancedBox, *tabHolder, *headerBox, *langRow;
 static Ihandle *basicTabBtn, *advTabBtn;
 static Ihandle *zhBtn, *enBtn;
 static Ihandle *timeoutTimer = NULL;
-// Only one page is mounted under tabHolder at a time; tracked by pointer.
+// Both pages stay mounted under tabHolder for the dialog's whole life;
+// activePage is the one currently VISIBLE and in flow.
 static Ihandle *activePage;
 
 static char dialogTitle[128];
@@ -313,23 +314,30 @@ static void fitDialogLive(void) {
     IupRefresh(dialog);
 }
 
-// Mount exactly one page under the holder; restyle headers and re-fit.
+// Both pages are permanent children of the holder. Detaching a page and
+// re-appending + IupMap on IUP 3.30 mingw6 loses native interactive state
+// (combo selection, radio dots, slider thumb, text fields come back blank,
+// even with IupUnmap in between), so a tab switch never remaps: the active
+// page is shown and kept in normal flow, the other is hidden AND taken out
+// of flow with FLOATING=YES. A merely VISIBLE=NO child is still walked when
+// the holder computes its natural size (which would force max-page sizing);
+// FLOATING is what keeps the per-page window fit tight.
 static void selectTab(Ihandle *page) {
-    BOOL mapped = dialog != NULL
-                  && IupGetAttribute(dialog, "HWND") != NULL;
+    Ihandle *other;
+    BOOL mapped;
     if (page == activePage) {
         syncTabHeaders();
         return;
     }
-    if (activePage != NULL) {
-        IupDetach(activePage);
-    }
-    IupAppend(tabHolder, page);
-    if (mapped) {
-        IupMap(page); // appended subtree of a mapped dialog needs mapping
-    }
+    other = (page == simpleBox) ? advancedBox : simpleBox;
+    IupSetAttribute(page, "FLOATING", "NO");
+    IupSetAttribute(page, "VISIBLE", "YES");
+    IupSetAttribute(other, "FLOATING", "YES");
+    IupSetAttribute(other, "VISIBLE", "NO");
     activePage = page;
     syncTabHeaders();
+    mapped = dialog != NULL
+             && IupGetAttribute(dialog, "HWND") != NULL;
     if (mapped) {
         fitDialogLive();
     }
@@ -401,12 +409,11 @@ void init(int argc, char* argv[]) {
     langRow = IupHbox(IupFill(), zhBtn, enBtn, NULL);
     IupSetAttribute(langRow, "GAP", "4");
 
-    tabHolder = IupVbox(NULL);
+    // Both pages are permanent children; selectTab only flips VISIBLE and
+    // FLOATING, so native control state survives every tab round trip.
+    tabHolder = IupVbox(simpleBox, advancedBox, NULL);
     IupSetAttribute(tabHolder, "EXPAND", "YES");
     dialogVBox = IupVbox(langRow, headerBox, tabHolder, NULL);
-    activePage = NULL;
-    // Classic CLI mode opens on the advanced page; basic otherwise.
-    selectTab(parameterized ? advancedBox : simpleBox);
 
     dialog = IupDialog(dialogVBox);
     snprintf(dialogTitle, sizeof(dialogTitle), "%s v%s",
@@ -418,7 +425,12 @@ void init(int argc, char* argv[]) {
     IupSetAttribute(dialogVBox, "ALIGNMENT", "ALEFT");
     IupSetAttribute(dialogVBox, "NCMARGIN", "6x6");
     IupSetAttribute(dialogVBox, "NCGAP", "6x4");
-    // Fit the opening window to the mounted page before map (no flash).
+    // Classic CLI mode opens on the advanced page; basic otherwise. Done
+    // after the dialog tree exists but still pre-map, so the opening fit
+    // measures only the visible, non-floating page.
+    activePage = NULL;
+    selectTab(parameterized ? advancedBox : simpleBox);
+    // Fit the opening window to the active page before map (no flash).
     fitPreMap();
 
     iconTimer = IupTimer();
