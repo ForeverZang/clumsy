@@ -50,6 +50,11 @@ typedef void (*UiSimpleAppWatchFn)(const char *exe);
 // button; watchApp notifies on app-list selection changes.
 Ihandle *uiSimpleCreate(Icallback actionCb, UiSimpleAppWatchFn watchApp);
 
+// The main Start/Stop button (test seam for callback wiring).
+Ihandle *uiSimpleActionButton(void);
+// The running-state countdown label (test seam for layout reservation).
+Ihandle *uiSimpleCountdownLabel(void);
+
 // Currently picked image name, or NULL for "all applications".
 const char *uiSimpleSelectedApp(void);
 // Global direction gate from the segmented control.

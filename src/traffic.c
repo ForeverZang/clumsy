@@ -12,7 +12,11 @@
 #define COLOR_UP    RGB(0x6d, 0xaa, 0x2c)
 #define COLOR_MARK  RGB(0xd9, 0x2b, 0x2b)
 #define COLOR_GRID  RGB(0xdc, 0xdc, 0xdc)
-#define CHART_PAD   8
+#define COLOR_AXIS  RGB(0x80, 0x80, 0x80)
+#define AXIS_LEFT   48   // rate labels + unit band
+#define AXIS_BOTTOM 18   // timestamp band
+#define PLOT_TOP    18   // room for the unit above the ceiling label
+#define PLOT_RIGHT  8
 
 typedef struct {
     UINT64 down;
@@ -121,6 +125,79 @@ void trafficFormatRate(UINT64 bytesPerSec, char *out, size_t cap) {
     }
 }
 
+// Round up to the smallest 1/2/5 x 10^n that reaches v (v >= 1).
+static UINT64 niceCeiling(UINT64 v) {
+    UINT64 p = 1;
+    if (v <= 1) {
+        return 1;
+    }
+    while (p <= v / 10) {
+        p *= 10;
+    }
+    if (v <= p) {
+        return p;
+    }
+    if (v <= 2 * p) {
+        return 2 * p;
+    }
+    if (v <= 5 * p) {
+        return 5 * p;
+    }
+    return 10 * p;
+}
+
+void trafficAxisScale(UINT64 maxBytesPerSec, UINT64 *outDivisor,
+                      const char **outUnit, UINT64 *outCeiling) {
+    static const UINT64 KILO = 1024;
+    static const UINT64 MEGA = 1024ull * 1024ull;
+    UINT64 divisor;
+    const char *unit;
+
+    if (maxBytesPerSec < KILO) {
+        divisor = 1;
+        unit = "B/s";
+    } else if (maxBytesPerSec < MEGA) {
+        divisor = KILO;
+        unit = "KB/s";
+    } else {
+        divisor = MEGA;
+        unit = "MB/s";
+    }
+    if (outDivisor != NULL) {
+        *outDivisor = divisor;
+    }
+    if (outUnit != NULL) {
+        *outUnit = unit;
+    }
+    if (outCeiling != NULL) {
+        *outCeiling = niceCeiling(maxBytesPerSec / divisor);
+    }
+}
+
+void trafficFormatAxisValue(double value, char *out, size_t cap) {
+    if (out == NULL || cap == 0) {
+        return;
+    }
+    if (value == 0.0) {
+        snprintf(out, cap, "0");
+    } else if (value < 10.0) {
+        snprintf(out, cap, "%.1f", value);
+    } else {
+        snprintf(out, cap, "%.0f", value);
+    }
+}
+
+void trafficTimeLabel(time_t when, char *out, size_t cap) {
+    struct tm local;
+    if (out == NULL || cap == 0) {
+        return;
+    }
+    out[0] = '\0';
+    if (localtime_s(&local, &when) == 0) {
+        strftime(out, cap, "%H:%M:%S", &local);
+    }
+}
+
 void trafficRecentAverage(const Traffic *t, int seconds,
                           UINT64 *outDown, UINT64 *outUp) {
     int available;
@@ -207,6 +284,88 @@ static void drawStartMarker(HDC dc, int column, const RECT *plot) {
     DeleteObject(pen);
 }
 
+// Tick columns whose wall-clock time is labelled below the axis:
+// oldest, two interior, and live (right edge).
+static const int AXIS_TICK_COLS[] = {0, 19, 39, 59};
+
+static HFONT makeAxisFont(void) {
+    return CreateFontA(-12, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                       DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                       CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                       DEFAULT_PITCH | FF_DONTCARE, "Segoe UI");
+}
+
+static void drawAxisLabels(HDC dc, UINT64 ceiling, UINT64 divisor,
+                           const char *unit, const RECT *plot) {
+    // Three gridlines: 0, half ceiling, ceiling. A ceiling of 1 skips the
+    // duplicate mid line (its half rounds to the same zero line).
+    double levels[3] = {0.0, (double)ceiling / 2.0, (double)ceiling};
+    static const int ALL_LEVELS[3] = {0, 1, 2};
+    static const int TWO_LEVELS[2] = {0, 2};
+    const int *levelIx = (ceiling < 2) ? TWO_LEVELS : ALL_LEVELS;
+    int levelCount = (ceiling < 2) ? 2 : 3;
+    int i;
+    SetTextAlign(dc, TA_RIGHT | TA_BASELINE);
+    for (i = 0; i < levelCount; i++) {
+        double level = levels[levelIx[i]];
+        UINT64 bytes = (UINT64)(level * (double)divisor + 0.5);
+        int y = pointY(bytes, ceiling * divisor, plot);
+        char num[24];
+        HPEN pen = CreatePen(PS_SOLID, 1, COLOR_GRID);
+        HFONT font = makeAxisFont();
+        HFONT oldFont;
+        HPEN oldPen;
+        trafficFormatAxisValue(level, num, sizeof(num));
+        oldPen = SelectObject(dc, pen);
+        MoveToEx(dc, plot->left, y, NULL);
+        LineTo(dc, plot->right, y);
+        SelectObject(dc, oldPen);
+        DeleteObject(pen);
+        oldFont = SelectObject(dc, font);
+        TextOutA(dc, plot->left - 5, y - 1, num, (int)strlen(num));
+        SelectObject(dc, oldFont);
+        DeleteObject(font);
+    }
+    // The single shared unit, as an axis title above the plot's left
+    // edge. It used to sit at the bottom of the left band and overprinted
+    // the "0" gridline label.
+    {
+        HFONT font = makeAxisFont();
+        HFONT oldFont = SelectObject(dc, font);
+        SetTextAlign(dc, TA_LEFT | TA_TOP);
+        TextOutA(dc, plot->left, 1, unit, (int)strlen(unit));
+        SelectObject(dc, oldFont);
+        DeleteObject(font);
+    }
+}
+
+static void drawTimeLabels(HDC dc, time_t now, const RECT *plot) {
+    HFONT font = makeAxisFont();
+    HFONT oldFont = SelectObject(dc, font);
+    size_t i;
+    SetBkMode(dc, TRANSPARENT);
+    for (i = 0; i < sizeof(AXIS_TICK_COLS) / sizeof(AXIS_TICK_COLS[0]);
+         i++) {
+        int col = AXIS_TICK_COLS[i];
+        int ageSec = TRAFFIC_BUCKETS - 1 - col;
+        char stamp[16];
+        int x = pointX(col, plot);
+        UINT align;
+        trafficTimeLabel(now - ageSec, stamp, sizeof(stamp));
+        if (i == 0) {
+            align = TA_LEFT;
+        } else if (i == 3) {
+            align = TA_RIGHT;
+        } else {
+            align = TA_CENTER;
+        }
+        SetTextAlign(dc, align | TA_TOP);
+        TextOutA(dc, x, plot->bottom + 3, stamp, (int)strlen(stamp));
+    }
+    SelectObject(dc, oldFont);
+    DeleteObject(font);
+}
+
 static void paintTraffic(const Traffic *t, HDC hdc, const RECT *client) {
     int width = client->right;
     int height = client->bottom;
@@ -217,23 +376,26 @@ static void paintTraffic(const Traffic *t, HDC hdc, const RECT *client) {
     RECT full = {0, 0, width, height};
     FillRect(mem, &full, (HBRUSH)GetStockObject(WHITE_BRUSH));
 
-    RECT plot = {CHART_PAD, CHART_PAD, width - CHART_PAD,
-                 height - CHART_PAD};
-    HPEN grid = CreatePen(PS_SOLID, 1, COLOR_GRID);
-    HPEN oldPen = SelectObject(mem, grid);
-    MoveToEx(mem, plot.left, plot.bottom, NULL);
-    LineTo(mem, plot.right, plot.bottom);
-    SelectObject(mem, oldPen);
-    DeleteObject(grid);
+    RECT plot = {AXIS_LEFT, PLOT_TOP, width - PLOT_RIGHT,
+                 height - AXIS_BOTTOM};
 
     UINT64 down[TRAFFIC_BUCKETS], up[TRAFFIC_BUCKETS];
     trafficSeries(t, down, up);
-    UINT64 maxValue = 1;
+    UINT64 rawMax = 1;
     for (int i = 0; i < TRAFFIC_BUCKETS; i++) {
-        if (down[i] > maxValue) maxValue = down[i];
-        if (up[i] > maxValue) maxValue = up[i];
+        if (down[i] > rawMax) rawMax = down[i];
+        if (up[i] > rawMax) rawMax = up[i];
     }
-    if (maxValue > 1) {
+    UINT64 divisor = 1, ceiling = 1;
+    const char *unit = "B/s";
+    trafficAxisScale(rawMax, &divisor, &unit, &ceiling);
+    UINT64 maxValue = ceiling * divisor;
+
+    SetBkMode(mem, TRANSPARENT);
+    SetTextColor(mem, COLOR_AXIS);
+    drawAxisLabels(mem, ceiling, divisor, unit, &plot);
+
+    if (rawMax > 1) {
         drawPolyline(mem, down, maxValue, &plot, COLOR_DOWN);
         drawPolyline(mem, up, maxValue, &plot, COLOR_UP);
     }
@@ -242,6 +404,8 @@ static void paintTraffic(const Traffic *t, HDC hdc, const RECT *client) {
     if (trafficStartColumn(t, &markerCol)) {
         drawStartMarker(mem, markerCol, &plot);
     }
+
+    drawTimeLabels(mem, time(NULL), &plot);
 
     BitBlt(hdc, 0, 0, width, height, mem, 0, 0, SRCCOPY);
     SelectObject(mem, oldBmp);

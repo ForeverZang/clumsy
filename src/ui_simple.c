@@ -129,8 +129,20 @@ void uiSimpleOnReinject(const char *packet, UINT packetLen,
 #define APP_ENUM_CAP        128
 #define RATE_TEXT_LEN       96
 #define COLOR_GREEN         "109 170 44"
+#define COLOR_GREEN_HOT     "132 196 68"
+#define COLOR_GREEN_DOWN    "86 138 34"
 #define COLOR_RED           "208 70 72"
+#define COLOR_RED_HOT       "226 98 100"
+#define COLOR_RED_DOWN      "176 56 58"
+#define COLOR_WHITE         "255 255 255"
 #define COLOR_HINT          "110 110 110"
+#define SWATCH_SIZE         12
+
+// Solid image tiles: BGCOLOR labels paint black or nothing under themed
+// comctl32, while IMAGE labels render reliably (same trick as the module
+// status icons in the advanced area).
+static unsigned char g_downSwatchPixels[SWATCH_SIZE * SWATCH_SIZE];
+static unsigned char g_upSwatchPixels[SWATCH_SIZE * SWATCH_SIZE];
 
 static Ihandle *g_appList, *g_refreshBtn, *g_appHint;
 static Ihandle *g_dirAll, *g_dirIn, *g_dirOut;
@@ -150,12 +162,21 @@ static int g_percent = 100;
 
 static void updateChartTitle(const char *exe);
 static void renderRates(void);
+static void actionButtonColors(BOOL running);
 
 const char *uiSimpleSelectedApp(void) {
     if (g_selectedRow >= 2 && (size_t)(g_selectedRow - 2) < g_appCount) {
         return g_apps[g_selectedRow - 2].exeName;
     }
     return NULL;
+}
+
+Ihandle *uiSimpleActionButton(void) {
+    return g_actionBtn;
+}
+
+Ihandle *uiSimpleCountdownLabel(void) {
+    return g_countdownLabel;
 }
 
 void uiSimpleGetDirection(short *outIn, short *outOut) {
@@ -238,8 +259,10 @@ static void populateAppList(const char *keepExe) {
             }
         }
     }
+    // Store: idx is a stack buffer and IupSetAttribute would keep the
+    // pointer instead of copying, leaving the native combo selection empty.
     snprintf(idx, sizeof(idx), "%d", g_selectedRow);
-    IupSetAttribute(g_appList, "VALUE", idx);
+    IupStoreAttribute(g_appList, "VALUE", idx);
     updateChartTitle(uiSimpleSelectedApp());
 }
 
@@ -308,7 +331,7 @@ static int presetCb(Ihandle *ih) {
     int percent = IupGetInt(ih, "PCT");
     char value[16];
     snprintf(value, sizeof(value), "%.2f", percent / 100.0);
-    IupSetAttribute(g_val, "VALUE", value);
+    IupStoreAttribute(g_val, "VALUE", value);
     applyPercent(percent);
     return IUP_DEFAULT;
 }
@@ -414,8 +437,7 @@ void uiSimpleSetRunning(BOOL running, BOOL enableLoss) {
     }
     IupStoreAttribute(g_actionBtn, "TITLE",
                       tr(running ? "action.stop" : "action.start"));
-    IupSetAttribute(g_actionBtn, "BGCOLOR", running ? COLOR_RED : COLOR_GREEN);
-    IupSetAttribute(g_actionBtn, "FGCOLOR", "255 255 255");
+    actionButtonColors(running);
     IupSetAttribute(g_appList, "ACTIVE", activeState);
     IupSetAttribute(g_refreshBtn, "ACTIVE", activeState);
     IupSetAttribute(g_dirAll, "ACTIVE", activeState);
@@ -439,6 +461,35 @@ void uiSimpleRetranslate(void) {
     renderRates();
     IupStoreAttribute(g_actionBtn, "TITLE",
                       tr(g_running ? "action.stop" : "action.start"));
+}
+
+// Build a small solid-color square from a one-palette IupImage.
+static Ihandle *makeSwatch(const char *handleName, unsigned char *pixels,
+                           const char *rgb) {
+    Ihandle *img, *label;
+    memset(pixels, 1, SWATCH_SIZE * SWATCH_SIZE);
+    img = IupImage(SWATCH_SIZE, SWATCH_SIZE, pixels);
+    IupSetAttribute(img, "1", rgb);
+    IupSetHandle(handleName, img);
+    label = IupLabel(NULL);
+    IupSetAttribute(label, "IMAGE", handleName);
+    IupSetAttribute(label, "PADDING", "0x0");
+    IupSetAttribute(label, "RASTERSIZE", "14x14");
+    return label;
+}
+
+// FlatButton shows its default light-blue HLCOLOR on hover unless the
+// palette is overridden; press uses PSCOLOR and text has matching pairs.
+static void actionButtonColors(BOOL running) {
+    IupSetAttribute(g_actionBtn, "BGCOLOR",
+                    running ? COLOR_RED : COLOR_GREEN);
+    IupSetAttribute(g_actionBtn, "HLCOLOR",
+                    running ? COLOR_RED_HOT : COLOR_GREEN_HOT);
+    IupSetAttribute(g_actionBtn, "PSCOLOR",
+                    running ? COLOR_RED_DOWN : COLOR_GREEN_DOWN);
+    IupSetAttribute(g_actionBtn, "FGCOLOR", COLOR_WHITE);
+    IupSetAttribute(g_actionBtn, "TEXTHLCOLOR", COLOR_WHITE);
+    IupSetAttribute(g_actionBtn, "TEXTPSCOLOR", COLOR_WHITE);
 }
 
 static Ihandle *makePresetButton(const char *key, int percent) {
@@ -466,6 +517,7 @@ Ihandle *uiSimpleCreate(Icallback actionCbImpl, UiSimpleAppWatchFn watchApp) {
     IupSetCallback(g_appList, "ACTION", (Icallback)appListCb);
     g_refreshBtn = IupButton(tr("app.refresh"), NULL);
     i18nBind(g_refreshBtn, "TITLE", "app.refresh");
+    IupSetAttribute(g_refreshBtn, "PADDING", "6x2");
     IupSetCallback(g_refreshBtn, "ACTION", (Icallback)refreshCb);
     g_appHint = IupFlatLabel(tr("app.hint"));
     i18nBind(g_appHint, "TITLE", "app.hint");
@@ -511,6 +563,11 @@ Ihandle *uiSimpleCreate(Icallback actionCbImpl, UiSimpleAppWatchFn watchApp) {
     i18nBind(g_secondsLabel, "TITLE", "timer.seconds");
     g_countdownLabel = IupFlatLabel("");
     IupSetAttribute(g_countdownLabel, "FGCOLOR", COLOR_RED);
+    // Canvas FlatLabels do not re-layout when TITLE changes post-map, and
+    // this label stays empty until one second after Start; reserve room
+    // for the longest localized countdown ("剩余 9999 秒") so it is not
+    // clipped to zero width while running.
+    IupSetAttribute(g_countdownLabel, "RASTERSIZE", "110x16");
     timerRow = IupHbox(g_timerToggle, g_timerText, g_secondsLabel, IupFill(),
                        g_countdownLabel, NULL);
     {
@@ -527,32 +584,39 @@ Ihandle *uiSimpleCreate(Icallback actionCbImpl, UiSimpleAppWatchFn watchApp) {
 
     // 4. chart
     g_canvas = trafficCreateCanvas(uiSimpleTraffic());
-    IupSetAttribute(g_canvas, "RASTERSIZE", "440x72");
+    // 72px plot + room for the left rate axis and bottom timestamp band.
+    IupSetAttribute(g_canvas, "RASTERSIZE", "440x92");
     IupSetAttribute(g_canvas, "EXPAND", "HORIZONTAL");
-    downIcon = IupLabel(NULL);
-    upIcon = IupLabel(NULL);
-    IupSetAttribute(downIcon, "BGCOLOR", "43 125 233");
-    IupSetAttribute(upIcon, "BGCOLOR", "109 170 44");
-    IupSetAttribute(downIcon, "RASTERSIZE", "10x10");
-    IupSetAttribute(upIcon, "RASTERSIZE", "10x10");
+    downIcon = makeSwatch("simple_sw_down", g_downSwatchPixels,
+                          "43 125 233");
+    upIcon = makeSwatch("simple_sw_up", g_upSwatchPixels,
+                        "109 170 44");
     downLabel = IupLabel(tr("chart.down"));
     upLabel = IupLabel(tr("chart.up"));
     i18nBind(downLabel, "TITLE", "chart.down");
     i18nBind(upLabel, "TITLE", "chart.up");
     g_beforeLabel = IupFlatLabel("");
     g_nowLabel = IupFlatLabel("");
-    legendRow = IupHbox(downIcon, downLabel, upIcon, upLabel, IupFill(),
-                        g_beforeLabel, g_nowLabel, NULL);
+    {
+        // fixed spacer so the two rate readouts never touch
+        Ihandle *legendGap = IupLabel(NULL);
+        IupSetAttribute(legendGap, "RASTERSIZE", "16x1");
+        legendRow = IupHbox(downIcon, downLabel, upIcon, upLabel, IupFill(),
+                            g_beforeLabel, legendGap, g_nowLabel, NULL);
+    }
     g_chartFrame = IupFrame(IupVbox(legendRow, g_canvas, NULL));
     IupStoreAttribute(g_chartFrame, "TITLE", tr("section.chart"));
 
-    // main action + status
-    g_actionBtn = IupButton(tr("action.start"), NULL);
+    // main action + status. FlatButton (unlike the themed native button)
+    // honors BGCOLOR; its click callback is FLAT_ACTION -- ACTION stays
+    // owned by the internal paint routine and must not be overwritten.
+    g_actionBtn = IupFlatButton(tr("action.start"));
+    i18nBind(g_actionBtn, "TITLE", "action.start");
     IupSetAttribute(g_actionBtn, "EXPAND", "HORIZONTAL");
     IupSetAttribute(g_actionBtn, "PADDING", "0x10");
-    IupSetAttribute(g_actionBtn, "BGCOLOR", COLOR_GREEN);
-    IupSetAttribute(g_actionBtn, "FGCOLOR", "255 255 255");
-    IupSetCallback(g_actionBtn, "ACTION", (Icallback)actionCb);
+    IupSetAttribute(g_actionBtn, "FONT", "Segoe UI, 11");
+    actionButtonColors(FALSE);
+    IupSetCallback(g_actionBtn, "FLAT_ACTION", (Icallback)actionCb);
     g_statusLabel = IupFlatLabel(tr("status.ready"));
     i18nBind(g_statusLabel, "TITLE", "status.ready");
     IupSetAttribute(g_statusLabel, "WRAP", "YES");

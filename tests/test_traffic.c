@@ -5,6 +5,7 @@
 #include <windows.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 #include <assert.h>
 
 #include "traffic.h"
@@ -122,6 +123,43 @@ int main(void) {
     trafficRecentAverage(t, 2, &avgDown, &avgUp);
     assert(avgDown == 300 && avgUp == 100);
     trafficDestroy(t);
+
+    // 8. Axis scale: a 1/2/5 ceiling in a single chosen unit (B/s, KB/s,
+    // or MB/s), so all three gridline labels on one chart share one unit.
+    UINT64 divisor = 0, ceiling = 0;
+    const char *unit = NULL;
+    trafficAxisScale(0, &divisor, &unit, &ceiling);
+    assert(divisor == 1 && strcmp(unit, "B/s") == 0 && ceiling == 1);
+    trafficAxisScale(300, &divisor, &unit, &ceiling);
+    assert(divisor == 1 && strcmp(unit, "B/s") == 0 && ceiling == 500);
+    trafficAxisScale(1500, &divisor, &unit, &ceiling);
+    assert(divisor == 1024 && strcmp(unit, "KB/s") == 0 && ceiling == 1);
+    trafficAxisScale(21504, &divisor, &unit, &ceiling); // 21 KB/s -> 1/2/5 -> 50
+    assert(divisor == 1024 && strcmp(unit, "KB/s") == 0 && ceiling == 50);
+    trafficAxisScale(10ull * 1024 * 1024, &divisor, &unit, &ceiling);
+    assert(divisor == 1024ull * 1024 && strcmp(unit, "MB/s") == 0
+           && ceiling == 10);
+
+    // Axis numbers: one decimal under 10, integers from 10 up.
+    char axis[24];
+    trafficFormatAxisValue(0.0, axis, sizeof(axis));
+    assert(strcmp(axis, "0") == 0);
+    trafficFormatAxisValue(0.5, axis, sizeof(axis));
+    assert(strcmp(axis, "0.5") == 0);
+    trafficFormatAxisValue(1.0, axis, sizeof(axis));
+    assert(strcmp(axis, "1.0") == 0);
+    trafficFormatAxisValue(25.0, axis, sizeof(axis));
+    assert(strcmp(axis, "25") == 0);
+
+    // 9. Axis timestamps are local HH:MM:SS, eight characters with colons.
+    char stamp[16];
+    trafficTimeLabel((time_t)0, stamp, sizeof(stamp));
+    assert(strlen(stamp) == 8 && stamp[2] == ':' && stamp[5] == ':');
+    for (int i = 0; i < 8; i++) {
+        if (i != 2 && i != 5) {
+            assert(stamp[i] >= '0' && stamp[i] <= '9');
+        }
+    }
 
     printf("OK: traffic\n");
     return 0;

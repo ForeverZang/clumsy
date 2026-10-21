@@ -14,6 +14,12 @@
 #include "procmap.h"
 #include "traffic.h"
 #include "ui_simple.h"
+#include "iup.h"
+
+// Marker callback so pointer identity can be checked on the widget.
+static int g_fakeFired = 0;
+static int fakeActionCb(Ihandle *ih) { (void)ih; g_fakeFired = 1;
+                                       return IUP_DEFAULT; }
 
 // Minimal valid IPv4 TCP packet (20 IP + 20 TCP) for tuple parsing.
 static unsigned char g_tcpPacket[40] = {
@@ -57,6 +63,50 @@ int main(void) {
     memset(&out, 0, sizeof(out));
     memset(&in, 0, sizeof(in));
     out.Outbound = 1;
+
+    // 0. Main action button: IupFlatButton reserves ACTION as its internal
+    // paint routine; the click must be wired through FLAT_ACTION. Binding
+    // the user callback on ACTION both kills painting (white band) and
+    // makes the button fire its callback on every repaint.
+    {
+        int targc = 1;
+        char *argvStore[] = { (char *)"test_ui_simple", NULL };
+        char **targv = argvStore;
+        Ihandle *btn, *box;
+        IupOpen(&targc, &targv);
+        IupSetGlobal("UTF8MODE", "YES");
+        box = uiSimpleCreate((Icallback)fakeActionCb, NULL);
+        btn = uiSimpleActionButton();
+        assert(btn != NULL);
+        {
+            // Click is wired on FLAT_ACTION and reaches the impl.
+            Icallback click = IupGetCallback(btn, "FLAT_ACTION");
+            assert(click != NULL);
+            g_fakeFired = 0;
+            click(btn);
+            assert(g_fakeFired == 1);
+            // ACTION still belongs to FlatButton's own paint routine;
+            // the click wrapper must not have hijacked it.
+            assert(IupGetCallback(btn, "ACTION") != click);
+            assert(IupGetCallback(btn, "ACTION") != NULL);
+
+            // Countdown label reserves layout width up front: it starts
+            // empty and is filled post-map once per second, and canvas
+            // FlatLabels do not re-layout on TITLE changes, so without a
+            // reserved size the running-state countdown clips to ~0 px.
+            {
+                Ihandle *cd = uiSimpleCountdownLabel();
+                const char *rs = IupGetAttribute(cd, "RASTERSIZE");
+                int rw = 0;
+                assert(cd != NULL);
+                assert(rs != NULL);
+                sscanf(rs, "%d", &rw);
+                assert(rw >= 90);
+            }
+        }
+        IupDestroy(box);
+        IupClose();
+    }
 
     // 1. Slider percent -> permyriad, clamped.
     assert(uiSimpleLossPermyriad(0) == 0);

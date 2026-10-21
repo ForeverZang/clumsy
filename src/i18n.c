@@ -77,7 +77,8 @@ static const I18nEntry g_table[] = {
     {"error.generic",           "操作失败，请重试",
                                 "The operation failed, please try again"},
 
-    // Folded advanced section
+    // Main-window tabs and advanced surface
+    {"tab.basic",          "基础功能", "Basic"},
     {"advanced.toggle",     "高级功能", "Advanced"},
     {"advanced.hint",       "延迟 · 节流 · 乱序 · 重复 · 篡改 · RST · 限速 · 自定义过滤器",
                             "lag · throttle · out-of-order · duplicate · tamper · RST · bandwidth · custom filter"},
@@ -226,6 +227,10 @@ void i18nBind(Ihandle *control, const char *attr, const char *key) {
         return;
     }
     g_bindingCount++;
+    // Apply immediately: controls created without an explicit value (e.g.
+    // IupFrame titles set only via the binding) must render in the current
+    // language before the first i18nRetranslate() call.
+    IupStoreAttribute(control, attr, tr(key));
 }
 
 void i18nRetranslate(void) {

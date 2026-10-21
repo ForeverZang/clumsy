@@ -29,9 +29,13 @@ volatile short sendState = SEND_STATUS_NONE;
 BOOL parameterized = 0; // reading args from command line
 
 // global iup handlers
-static Ihandle *dialog, *iconTimer;
-static Ihandle *advancedBox, *advancedToggle;
+static Ihandle *dialog, *dialogVBox, *iconTimer;
+static Ihandle *simpleBox, *advancedBox, *tabHolder, *headerBox, *langRow;
+static Ihandle *basicTabBtn, *advTabBtn;
+static Ihandle *zhBtn, *enBtn;
 static Ihandle *timeoutTimer = NULL;
+// Only one page is mounted under tabHolder at a time; tracked by pointer.
+static Ihandle *activePage;
 
 static char dialogTitle[128];
 
@@ -41,6 +45,10 @@ static int uiStopCb(Ihandle *ih);
 static int uiToggleActionCb(Ihandle *ih);
 static int uiIconTimerCb(Ihandle *ih);
 static int uiTimeoutCb(Ihandle *ih);
+static void fitPreMap(void);
+static void fitDialogLive(void);
+static void selectTab(Ihandle *page);
+static void showAdvancedTab(void);
 
 // Persistent SNIFF lifecycle for a picked app. NULL ("all applications")
 // tears the persistent session down; global mode attaches at Start.
@@ -70,10 +78,8 @@ static BOOL compileAdvancedFilter(void) {
     }
     snprintf(msg, sizeof(msg), tr("advanced.filterError"), err);
     uiAdvancedSetFilterError(msg);
-    // reveal the folded area so the red line is visible
-    IupSetAttribute(advancedBox, "VISIBLE", "YES");
-    IupSetAttribute(advancedToggle, "VALUE", "ON");
-    IupRefresh(dialog);
+    // switch to the advanced tab so the red line is visible
+    showAdvancedTab();
     uiSimpleSetStatus(msg);
     return FALSE;
 }
@@ -171,18 +177,183 @@ static void startParameterized(void) {
     statusAffecting();
 }
 
-static int advancedToggleCb(Ihandle *ih, int state) {
-    IupSetAttribute(advancedBox, "VISIBLE", state ? "YES" : "NO");
+// Language buttons: flat, blue-and-white for the active language, light
+// gray for the other, so the default (Chinese) state reads as selected.
+#define LANG_BTN_ACTIVE_BG  "43 125 233"
+#define LANG_BTN_ACTIVE_FG  "255 255 255"
+#define LANG_BTN_IDLE_BG    "238 238 242"
+#define LANG_BTN_IDLE_FG    "70 70 74"
+#define LANG_BTN_IDLE_EDGE  "200 200 205"
+
+static void styleLangButton(Ihandle *btn, BOOL active) {
+    const char *bg = active ? LANG_BTN_ACTIVE_BG : LANG_BTN_IDLE_BG;
+    const char *fg = active ? LANG_BTN_ACTIVE_FG : LANG_BTN_IDLE_FG;
+    IupSetAttribute(btn, "BGCOLOR", bg);
+    IupSetAttribute(btn, "HLCOLOR", bg);
+    IupSetAttribute(btn, "PSCOLOR", bg);
+    IupSetAttribute(btn, "FGCOLOR", fg);
+    IupSetAttribute(btn, "TEXTHLCOLOR", fg);
+    IupSetAttribute(btn, "TEXTPSCOLOR", fg);
+    IupSetAttribute(btn, "BORDERCOLOR",
+                    active ? LANG_BTN_ACTIVE_BG : LANG_BTN_IDLE_EDGE);
+}
+
+static void syncLangButtons(void) {
+    Lang lang = i18nGetLang();
+    styleLangButton(zhBtn, lang == LANG_ZH);
+    styleLangButton(enBtn, lang == LANG_EN);
+}
+
+// Custom tab headers: two flat buttons above a holder that mounts exactly
+// one page at a time. A native IupTabs reports one natural size for BOTH
+// pages (widest/tallest child wins) and IUP never shrinks a child below its
+// natural width, so the basic window always reserved the advanced page's
+// width and clipped. Only the mounted page contributes to the vbox natural
+// size, so fitting is just vbox NATURALSIZE + slack.
+#define TAB_ACTIVE_BG  "255 255 255"
+#define TAB_ACTIVE_FG  "32 32 36"
+#define TAB_IDLE_BG    "232 232 236"
+#define TAB_IDLE_FG    "90 90 96"
+#define TAB_EDGE       "180 180 186"
+
+static void styleTabButton(Ihandle *btn, BOOL active) {
+    const char *bg = active ? TAB_ACTIVE_BG : TAB_IDLE_BG;
+    const char *fg = active ? TAB_ACTIVE_FG : TAB_IDLE_FG;
+    IupSetAttribute(btn, "BGCOLOR", bg);
+    IupSetAttribute(btn, "HLCOLOR", bg);
+    IupSetAttribute(btn, "PSCOLOR", bg);
+    IupSetAttribute(btn, "FGCOLOR", fg);
+    IupSetAttribute(btn, "TEXTHLCOLOR", fg);
+    IupSetAttribute(btn, "TEXTPSCOLOR", fg);
+    IupSetAttribute(btn, "BORDERCOLOR", TAB_EDGE);
+}
+
+static void syncTabHeaders(void) {
+    styleTabButton(basicTabBtn, activePage == simpleBox);
+    styleTabButton(advTabBtn, activePage == advancedBox);
+}
+
+// Outer slack around the vbox natural size in this IUP build (NCMARGIN
+// "6x6" + NCGAP "6x4" still leave a few unreported pixels); tuned in the
+// headless harness so neither page clips. Keep in sync with those attrs.
+#define VBOX_SLACK_W    12
+#define VBOX_SLACK_H    12
+// Title bar + borders measured on Win11 at RESIZE=NO
+// (RASTERSIZE 500x600 -> client 494x571). The post-show pass measures the
+// real native chrome; these only set the opening size pre-map.
+#define CHROME_W_INIT   6
+#define CHROME_H_INIT   29
+
+static BOOL parseNatural(Ihandle *ih, int *w, int *h) {
+    const char *s = IupGetAttribute(ih, "NATURALSIZE");
+    return s != NULL && sscanf(s, "%dx%d", w, h) == 2
+        && *w > 0 && *w < 10000 && *h > 0 && *h < 10000;
+}
+
+static BOOL computeContentSize(int *outW, int *outH) {
+    int vw, vh;
     IupRefresh(dialog);
+    if (!parseNatural(dialogVBox, &vw, &vh)) {
+        return FALSE;
+    }
+    *outW = vw + VBOX_SLACK_W;
+    *outH = vh + VBOX_SLACK_H;
+    return TRUE;
+}
+
+// Size the opening window before map: storing RASTERSIZE works pre-map.
+static void fitPreMap(void) {
+    int contentW, contentH;
+    char raster[32];
+    if (!computeContentSize(&contentW, &contentH)) {
+        return;
+    }
+    snprintf(raster, sizeof(raster), "%dx%d",
+             contentW + CHROME_W_INIT, contentH + CHROME_H_INIT);
+    IupStoreAttribute(dialog, "RASTERSIZE", raster);
+    IupRefresh(dialog);
+}
+
+// Post-map fit: in IUP 3.30 storing a new dialog RASTERSIZE after map is a
+// no-op, but a native SetWindowPos flows back through WM_SIZE and IUP
+// re-lays the children. Re-centers at the same time.
+static void fitDialogLive(void) {
+    int contentW, contentH;
+    int chromeW = CHROME_W_INIT, chromeH = CHROME_H_INIT;
+    HWND dialogHwnd;
+    RECT wr, cr;
+    MONITORINFO mi;
+    int outerW, outerH, x, y;
+
+    if (dialog == NULL || !computeContentSize(&contentW, &contentH)) {
+        return;
+    }
+    dialogHwnd = (HWND)(intptr_t)IupGetAttribute(dialog, "HWND");
+    if (dialogHwnd == NULL || !GetWindowRect(dialogHwnd, &wr)
+        || !GetClientRect(dialogHwnd, &cr)) {
+        return;
+    }
+    chromeW = (wr.right - wr.left) - cr.right;
+    chromeH = (wr.bottom - wr.top) - cr.bottom;
+    outerW = contentW + chromeW;
+    outerH = contentH + chromeH;
+    mi.cbSize = sizeof(mi);
+    if (GetMonitorInfoW(MonitorFromWindow(dialogHwnd,
+                                          MONITOR_DEFAULTTONEAREST), &mi)) {
+        x = mi.rcWork.left
+            + (mi.rcWork.right - mi.rcWork.left - outerW) / 2;
+        y = mi.rcWork.top
+            + (mi.rcWork.bottom - mi.rcWork.top - outerH) / 2;
+    } else {
+        x = wr.left;
+        y = wr.top;
+    }
+    SetWindowPos(dialogHwnd, NULL, x, y, outerW, outerH,
+                 SWP_NOZORDER | SWP_NOACTIVATE);
+    IupRefresh(dialog);
+}
+
+// Mount exactly one page under the holder; restyle headers and re-fit.
+static void selectTab(Ihandle *page) {
+    BOOL mapped = dialog != NULL
+                  && IupGetAttribute(dialog, "HWND") != NULL;
+    if (page == activePage) {
+        syncTabHeaders();
+        return;
+    }
+    if (activePage != NULL) {
+        IupDetach(activePage);
+    }
+    IupAppend(tabHolder, page);
+    if (mapped) {
+        IupMap(page); // appended subtree of a mapped dialog needs mapping
+    }
+    activePage = page;
+    syncTabHeaders();
+    if (mapped) {
+        fitDialogLive();
+    }
+}
+
+static int basicTabCb(Ihandle *ih) {
+    UNREFERENCED_PARAMETER(ih);
+    selectTab(simpleBox);
     return IUP_DEFAULT;
+}
+
+static int advTabCb(Ihandle *ih) {
+    UNREFERENCED_PARAMETER(ih);
+    selectTab(advancedBox);
+    return IUP_DEFAULT;
+}
+
+static void showAdvancedTab(void) {
+    selectTab(advancedBox);
 }
 
 static int languageCb(Ihandle *ih);
 
 void init(int argc, char* argv[]) {
-    Ihandle *dialogVBox, *simpleBox, *advancedHint;
-    Ihandle *langRow, *zhBtn, *enBtn;
-
     // filter presets before anything touches the UI
     uiAdvancedLoadConfig();
 
@@ -203,46 +374,52 @@ void init(int argc, char* argv[]) {
 
     simpleBox = uiSimpleCreate((Icallback)uiToggleActionCb, watchApp);
     advancedBox = uiAdvancedCreate();
-    IupSetAttribute(advancedBox, "VISIBLE", "NO");
-    advancedToggle = IupToggle(tr("advanced.toggle"), NULL);
-    i18nBind(advancedToggle, "TITLE", "advanced.toggle");
-    IupSetCallback(advancedToggle, "ACTION", (Icallback)advancedToggleCb);
-    advancedHint = IupFlatLabel(tr("advanced.hint"));
-    i18nBind(advancedHint, "TITLE", "advanced.hint");
-    IupSetAttribute(advancedHint, "FGCOLOR", "110 110 110");
-    IupSetAttribute(advancedHint, "WRAP", "YES");
-    IupSetAttribute(advancedHint, "EXPAND", "HORIZONTAL");
 
-    // title-bar language switch lives at the window's top-right
-    zhBtn = IupButton("中", NULL);
-    enBtn = IupButton("EN", NULL);
-    IupSetCallback(zhBtn, "ACTION", (Icallback)languageCb);
-    IupSetCallback(enBtn, "ACTION", (Icallback)languageCb);
+    // Custom tab headers directly under the language row: basic is default.
+    basicTabBtn = IupFlatButton(NULL);
+    advTabBtn = IupFlatButton(NULL);
+    i18nBind(basicTabBtn, "TITLE", "tab.basic");
+    i18nBind(advTabBtn, "TITLE", "advanced.toggle");
+    IupSetCallback(basicTabBtn, "FLAT_ACTION", (Icallback)basicTabCb);
+    IupSetCallback(advTabBtn, "FLAT_ACTION", (Icallback)advTabCb);
+    IupSetAttribute(basicTabBtn, "RASTERSIZE", "96x26");
+    IupSetAttribute(advTabBtn, "RASTERSIZE", "96x26");
+    headerBox = IupHbox(basicTabBtn, advTabBtn, IupFill(), NULL);
+    IupSetAttribute(headerBox, "GAP", "2");
+
+    // Language switch lives at the window's top-right; the active language
+    // reads as a pressed/selected button.
+    zhBtn = IupFlatButton("中");
+    enBtn = IupFlatButton("EN");
+    IupSetCallback(zhBtn, "FLAT_ACTION", (Icallback)languageCb);
+    IupSetCallback(enBtn, "FLAT_ACTION", (Icallback)languageCb);
     IupSetInt(zhBtn, "LANGID", LANG_ZH);
     IupSetInt(enBtn, "LANGID", LANG_EN);
-    langRow = IupHbox(IupFill(), zhBtn, enBtn, NULL);
     IupSetAttribute(zhBtn, "RASTERSIZE", "36x22");
     IupSetAttribute(enBtn, "RASTERSIZE", "40x22");
+    syncLangButtons();
+    langRow = IupHbox(IupFill(), zhBtn, enBtn, NULL);
+    IupSetAttribute(langRow, "GAP", "4");
 
-    dialog = IupDialog(
-        dialogVBox = IupVbox(
-            langRow,
-            simpleBox,
-            advancedToggle,
-            advancedHint,
-            advancedBox,
-            NULL
-        )
-    );
+    tabHolder = IupVbox(NULL);
+    IupSetAttribute(tabHolder, "EXPAND", "YES");
+    dialogVBox = IupVbox(langRow, headerBox, tabHolder, NULL);
+    activePage = NULL;
+    // Classic CLI mode opens on the advanced page; basic otherwise.
+    selectTab(parameterized ? advancedBox : simpleBox);
+
+    dialog = IupDialog(dialogVBox);
     snprintf(dialogTitle, sizeof(dialogTitle), "%s v%s",
              tr("app.title"), CLUMSY_VERSION);
     IupSetAttribute(dialog, "TITLE", dialogTitle);
-    IupSetAttribute(dialog, "SIZE", "500x");
+    IupSetAttribute(dialog, "RASTERSIZE", "500x600");
     IupSetAttribute(dialog, "RESIZE", "NO");
     IupSetCallback(dialog, "SHOW_CB", (Icallback)uiOnDialogShow);
-    IupSetAttribute(dialogVBox, "ALIGNMENT", "ACENTER");
+    IupSetAttribute(dialogVBox, "ALIGNMENT", "ALEFT");
     IupSetAttribute(dialogVBox, "NCMARGIN", "6x6");
     IupSetAttribute(dialogVBox, "NCGAP", "6x4");
+    // Fit the opening window to the mounted page before map (no flash).
+    fitPreMap();
 
     iconTimer = IupTimer();
     IupSetAttribute(iconTimer, "TIME", STR(ICON_UPDATE_MS));
@@ -310,6 +487,10 @@ static int uiOnDialogShow(Ihandle *ih, int state) {
     hWnd = (HWND)IupGetAttribute(ih, "HWND");
     hInstance = GetModuleHandle(NULL);
 
+    // Re-fit to the mounted page against live native chrome; fitDialogLive
+    // also re-centers.
+    fitDialogLive();
+
     icon = LoadIcon(hInstance, "CLUMSY_ICON");
     SendMessage(hWnd, WM_SETICON, ICON_BIG, (LPARAM)icon);
     SendMessage(hWnd, WM_SETICON, ICON_SMALL, (LPARAM)icon);
@@ -356,6 +537,11 @@ static int languageCb(Ihandle *ih) {
     snprintf(dialogTitle, sizeof(dialogTitle), "%s v%s",
              tr("app.title"), CLUMSY_VERSION);
     IupSetAttribute(dialog, "TITLE", dialogTitle);
+    // Tab titles and page label widths changed with the language; restyle
+    // the headers (bound TITLE already retranslated) and re-fit the window.
+    syncLangButtons();
+    syncTabHeaders();
+    fitDialogLive();
     return IUP_DEFAULT;
 }
 

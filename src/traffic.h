@@ -1,6 +1,8 @@
 #ifndef CLUMSY_TRAFFIC_H
 #define CLUMSY_TRAFFIC_H
 
+#include <time.h>
+
 #include "common.h"
 
 #define TRAFFIC_BUCKETS 60
@@ -30,6 +32,16 @@ BOOL     trafficStartColumn(const Traffic *t, int *outColumn);
 
 // Human-readable byte rate, e.g. "0 B/s", "999 B/s", "1.5 KB/s", "10.0 MB/s".
 void     trafficFormatRate(UINT64 bytesPerSec, char *out, size_t cap);
+
+// Axis scale for the chart: one shared unit ("B/s", "KB/s" or "MB/s") and
+// a 1/2/5-style ceiling expressed in that unit. All gridline labels on one
+// chart share the returned unit.
+void     trafficAxisScale(UINT64 maxBytesPerSec, UINT64 *outDivisor,
+                          const char **outUnit, UINT64 *outCeiling);
+// One axis label number: one decimal below 10, integer from 10 up, "0" at 0.
+void     trafficFormatAxisValue(double value, char *out, size_t cap);
+// Local wall-clock HH:MM:SS for an axis tick.
+void     trafficTimeLabel(time_t when, char *out, size_t cap);
 
 // Mean bytes/sec over up to `seconds` completed buckets immediately before
 // the live (still accumulating) bucket. Clipped by elapsed ticks, so a
