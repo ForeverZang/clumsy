@@ -54,6 +54,8 @@ Ihandle *uiSimpleCreate(Icallback actionCb, UiSimpleAppWatchFn watchApp);
 Ihandle *uiSimpleActionButton(void);
 // The running-state countdown label (test seam for layout reservation).
 Ihandle *uiSimpleCountdownLabel(void);
+// The before/now rate readouts (test seam for layout reservation).
+void uiSimpleRateLabels(Ihandle **before, Ihandle **now);
 
 // Currently picked image name, or NULL for "all applications".
 const char *uiSimpleSelectedApp(void);

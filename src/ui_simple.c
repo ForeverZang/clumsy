@@ -179,6 +179,15 @@ Ihandle *uiSimpleCountdownLabel(void) {
     return g_countdownLabel;
 }
 
+void uiSimpleRateLabels(Ihandle **before, Ihandle **now) {
+    if (before != NULL) {
+        *before = g_beforeLabel;
+    }
+    if (now != NULL) {
+        *now = g_nowLabel;
+    }
+}
+
 void uiSimpleGetDirection(short *outIn, short *outOut) {
     short in = (short)(IupGetInt(g_dirIn, "VALUE") == 1);
     short out = (short)(IupGetInt(g_dirOut, "VALUE") == 1);
@@ -597,6 +606,11 @@ Ihandle *uiSimpleCreate(Icallback actionCbImpl, UiSimpleAppWatchFn watchApp) {
     i18nBind(upLabel, "TITLE", "chart.up");
     g_beforeLabel = IupFlatLabel("");
     g_nowLabel = IupFlatLabel("");
+    // FlatLabels never re-layout when TITLE changes post-map; reserve the
+    // gigabit-range pair width ("开始前 ↓ 999.9 MB/s　↑ 999.9 MB/s") so the
+    // upload half of the readout cannot clip once rates leave B/s.
+    IupSetAttribute(g_beforeLabel, "RASTERSIZE", "250x16");
+    IupSetAttribute(g_nowLabel, "RASTERSIZE", "250x16");
     {
         // fixed spacer so the two rate readouts never touch
         Ihandle *legendGap = IupLabel(NULL);

@@ -103,6 +103,27 @@ int main(void) {
                 sscanf(rs, "%d", &rw);
                 assert(rw >= 90);
             }
+            // Rate readouts grow from "0 B/s" to "999.9 MB/s" pairs after
+            // map; canvas FlatLabels do not re-layout on TITLE changes, so
+            // both must reserve the wide-text width up front or the tail
+            // (the upload rate) clips past the frame's right edge.
+            {
+                Ihandle *beforeLbl = NULL;
+                Ihandle *nowLbl = NULL;
+                const char *rs1;
+                const char *rs2;
+                int w1 = 0;
+                int w2 = 0;
+                uiSimpleRateLabels(&beforeLbl, &nowLbl);
+                assert(beforeLbl != NULL && nowLbl != NULL);
+                rs1 = IupGetAttribute(beforeLbl, "RASTERSIZE");
+                rs2 = IupGetAttribute(nowLbl, "RASTERSIZE");
+                assert(rs1 != NULL && rs2 != NULL);
+                sscanf(rs1, "%d", &w1);
+                sscanf(rs2, "%d", &w2);
+                assert(w1 >= 200);
+                assert(w2 >= 200);
+            }
         }
         IupDestroy(box);
         IupClose();
