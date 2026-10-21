@@ -101,14 +101,24 @@ pub fn build(b: *std.build.Builder) void {
     exe.addCSourceFile("src/drop.c", &.{""});
     exe.addCSourceFile("src/duplicate.c", &.{""});
     exe.addCSourceFile("src/elevate.c", &.{""});
+    exe.addCSourceFile("src/flowmap.c", &.{""});
+    exe.addCSourceFile("src/flowwatch.c", &.{""});
+    exe.addCSourceFile("src/i18n.c", &.{""});
     exe.addCSourceFile("src/lag.c", &.{""});
     exe.addCSourceFile("src/main.c", &.{""});
     exe.addCSourceFile("src/ood.c", &.{""});
     exe.addCSourceFile("src/packet.c", &.{""});
+    exe.addCSourceFile("src/pktparse.c", &.{""});
+    exe.addCSourceFile("src/procmap.c", &.{""});
     exe.addCSourceFile("src/reset.c", &.{""});
+    exe.addCSourceFile("src/simple.c", &.{""});
+    exe.addCSourceFile("src/swfilter.c", &.{""});
     exe.addCSourceFile("src/tamper.c", &.{""});
+    exe.addCSourceFile("src/targeting.c", &.{""});
     exe.addCSourceFile("src/throttle.c", &.{""});
-    exe.addCSourceFile("src/utils.c", &.{""});
+    exe.addCSourceFile("src/traffic.c", &.{""});
+    exe.addCSourceFile("src/ui_advanced.c", &.{""});
+    exe.addCSourceFile("src/ui_simple.c", &.{""});
     exe.addCSourceFile("src/utils.c", &.{""});
 
     if (arch == .x86)
@@ -135,6 +145,7 @@ pub fn build(b: *std.build.Builder) void {
     exe.linkSystemLibrary("comdlg32");
     exe.linkSystemLibrary("uuid");
     exe.linkSystemLibrary("ole32");
+    exe.linkSystemLibrary("iphlpapi");
 
     const exe_install_step = b.addInstallArtifact(exe);  
     if (conf == .Ship)
