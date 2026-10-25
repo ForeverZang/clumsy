@@ -244,22 +244,22 @@ BOOL ocrEngineRead(OcrEngine *, const unsigned char *bgra,
 ```
 无 cls；精确模式参数按 Task 1 ledger 固化为常量。
 
-- [ ] **Step 1: 引擎烟雾测试（手动）**
+- [x] **Step 1: 引擎烟雾测试（手动）**
 
 `engine_smoke.c` 调 `ocrEngineCreate(external/RapidOCRLite/models)` 读 Task 1 三张样例，复现 spike 数字。
 Expected: 与 spike 一致，缺失模型时返回 NULL + err 英文说明。
 
-- [ ] **Step 2: 实现桥**
+- [x] **Step 2: 实现桥**
 
 init 失败、recognize 空图/超宽防御；库若是动态链接，DLL 复制进构建输出目录（debug+release 脚本各加 cp）。
 
-- [ ] **Step 3: 产品构建**
+- [x] **Step 3: 产品构建**
 
 Run: `SIGN=A scripts/build-debug.sh`
 Expected: 链接通过无 warning 新增；`build/mingw64-debug/` 内 DLL/模型就位（模型是否复制由 Task 1 结论决定大小策略）。
 
-- [ ] **Step 4: 全量测试**：11+3=14 个 TU 全绿（引擎不进任何测试 TU，避免测试依赖模型）。
-- [ ] **Step 5: Commit**
+- [x] **Step 4: 全量测试**：11+3=14 个 TU 全绿（引擎不进任何测试 TU，避免测试依赖模型）。
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/ocr_engine.h src/ocr_engine.c scripts/build-debug.sh scripts/build-release.sh build.zig
