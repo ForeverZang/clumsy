@@ -28,6 +28,7 @@ srcs_for() {
         i18n)           SRC="src/i18n.c" ;;
         swfilter)       SRC="src/swfilter.c" ;;
         ocr_rules)      SRC="src/ocr_rules.c" ;;
+        ocr_timeline)   SRC="src/ocr_timeline.c" ;;
         ui_simple)      SRC="src/ui_simple.c src/traffic.c src/i18n.c src/simple.c \
                          src/targeting.c src/procmap.c src/swfilter.c \
                          src/pktparse.c src/packet.c src/utils.c" ;;
@@ -36,7 +37,7 @@ srcs_for() {
 }
 
 TESTS="sanity flowmap procmap flowwatch_seed pktparse targeting simple \
-       traffic i18n swfilter ocr_rules ui_simple"
+       traffic i18n swfilter ocr_rules ocr_timeline ui_simple"
 
 fail=0
 ran=0

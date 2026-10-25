@@ -162,14 +162,14 @@ BOOL ocrTimelineDefaultDir(char *out, size_t cap, char *fallback, size_t fbCap);
 ```
 固定表头：`time_ms,time_local,event,region,ocr_text,keyword,edge,loss_percent,source,note`；UTF-8 BOM；`time_local` 用本地 `YYYY-MM-DD HH:MM:SS.mmm`。
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 断言 `ocrCsvEscape`：普通串原样；含逗号/双引号/换行的包裹与引号翻倍；NULL→空串。`ocrTimelineOpen/Event/Close` 用 `dirHint` 指向 `build/tests/` 下临时目录：文件存在、首行 BOM+表头、写入两行后读回列数与 loss_percent 一致（-1 写空）。`ocrTimelineDefaultDir` 在测试环境设置 LOCALAPPDATA 临时目录后路径以 `ocr-runs` 结尾，目录被创建。
 
-- [ ] **Step 2: 验证失败**：BUILD FAIL `ocr_timeline`。
-- [ ] **Step 3: 实现**（CreateDirectory 逐级；fopen "utf-8-sig" 等价：手写 `\xEF\xBB\xBF`；每事件 fflush）。
-- [ ] **Step 4: 验证通过**：`PASS: ocr_timeline`，全量绿。
-- [ ] **Step 5: Commit**
+- [x] **Step 2: 验证失败**：BUILD FAIL `ocr_timeline`。
+- [x] **Step 3: 实现**（CreateDirectory 逐级；fopen "utf-8-sig" 等价：手写 `\xEF\xBB\xBF`；每事件 fflush）。
+- [x] **Step 4: 验证通过**：`PASS: ocr_timeline`，全量绿。
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/ocr_timeline.h src/ocr_timeline.c tests/test_ocr_timeline.c scripts/run_tests.sh
