@@ -208,17 +208,17 @@ void captureFreeBitmap(unsigned char *bgra);
 BOOL captureIsCapturable(HWND hwnd); // 存在/可见/非 iconic
 ```
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 `captureMapNorm`：1000×800 客户区 rect{0.6,0.85,0.35,0.12} → 像素 RECT 与容差 1；150% 缩放由调用方传物理像素，再给一组 1500×1200 断言比例一致；越界比例钳制在客户区内。`captureTitleMatchLevel`：`"记事本"` vs `"无标题 - 记事本"`=1 子串、vs `"记事本"`=2 完全、vs `"chrome"`=0、空串/NULL=0。`captureResolveWindow`：0 候选→matchCount=0；一个完全相等 + 若干子串时取完全相等 matchCount=1；仅两个子串→matchCount=2 且 out 不写；单子串→1 并写 out。`captureMakeThumbnail`：构造 4×4 已知灰度（B=G=R）BGRA 缓冲，thumbW=2，输出灰度均值正确、outTh 按比例。`captureChanged`：相同缓冲 FALSE；改一个像素且 MAD 超阈值 TRUE；阈值边界（等于阈值 FALSE）。
 
-- [ ] **Step 2: 验证失败**：BUILD FAIL `ocr_capture`。
-- [ ] **Step 3: 实现**
+- [x] **Step 2: 验证失败**：BUILD FAIL `ocr_capture`。
+- [x] **Step 3: 实现**
 
 EnumWindows 回调按 AppGroup（procmapEnumApps 找到 exeName 组）pid 集合过滤，要求顶层、WS_VISIBLE、有标题或尺寸 ≥100×100；PrintWindow 用 PW_CLIENTONLY|PW_RENDERFULLCONTENT（0x00000002），BGRA 来自 GetDIBits 32bit；全黑判定留给 Task 6 调用方（方差/与上一帧比较）。
 
-- [ ] **Step 4: 验证通过**：`PASS: ocr_capture`，全量绿。
-- [ ] **Step 5: Commit**
+- [x] **Step 4: 验证通过**：`PASS: ocr_capture`，全量绿。
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/ocr_capture.h src/ocr_capture.c tests/test_ocr_capture.c scripts/run_tests.sh
