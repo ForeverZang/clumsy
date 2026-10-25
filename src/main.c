@@ -121,6 +121,11 @@ static int uiStartCb(Ihandle *ih) {
 #endif
     exe = uiSimpleSelectedApp();
     if (!divertIsAttached() && !divertAttach("true", err)) {
+#if defined(CLUMSY_OCR)
+        // OCR preflight succeeded: tear its worker down, or it would keep
+        // scanning and moving the loss gear with no intercept running.
+        uiOcrGlueStop();
+#endif
         swfilterClear();
         uiSimpleSetStatus(err);
         return IUP_DEFAULT;
@@ -131,6 +136,9 @@ static int uiStartCb(Ihandle *ih) {
         if (exe == NULL) {
             divertDetach();
         }
+#if defined(CLUMSY_OCR)
+        uiOcrGlueStop();
+#endif
         swfilterClear();
         uiSimpleSetStatus(err);
         return IUP_DEFAULT;
@@ -456,6 +464,12 @@ void init(int argc, char* argv[]) {
     IupSetAttribute(dialog, "RASTERSIZE", "500x600");
     IupSetAttribute(dialog, "RESIZE", "NO");
     IupSetCallback(dialog, "SHOW_CB", (Icallback)uiOnDialogShow);
+#if defined(CLUMSY_OCR)
+    // Section ⑤ expands in place on the fixed-size (RESIZE=NO) dialog:
+    // grow/re-center the mapped window so the rule table, log and the
+    // in-block Start button are never clipped.
+    uiOcrSetLayoutChangedCallback(fitDialogLive);
+#endif
     IupSetAttribute(dialogVBox, "ALIGNMENT", "ALEFT");
     IupSetAttribute(dialogVBox, "NCMARGIN", "6x6");
     IupSetAttribute(dialogVBox, "NCGAP", "6x4");
