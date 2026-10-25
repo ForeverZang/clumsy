@@ -20,6 +20,7 @@ struct Frame {
     const char  *text;
     unsigned char pixel;
     BOOL captureOk;
+    BOOL blank; // PrintWindow succeeded but returned a black/no-picture frame
 };
 
 struct RegFake {
@@ -62,9 +63,12 @@ static BOOL fakeCapture(HWND hwnd, const RECT *rc, unsigned char **outBgra,
     int w = 32, h = 8;
     unsigned char *bgra = malloc((size_t)w * h * 4);
     assert(bgra);
-    memset(bgra, f->frames[fi].pixel, (size_t)w * h * 4);
-    bgra[0] = (unsigned char)(0xA0 + ri);
-    bgra[4] = (unsigned char)(fi & 0xFF);
+    memset(bgra, f->frames[fi].blank ? 0 : f->frames[fi].pixel,
+           (size_t)w * h * 4);
+    if (!f->frames[fi].blank) {
+        bgra[0] = (unsigned char)(0xA0 + ri);
+        bgra[4] = (unsigned char)(fi & 0xFF);
+    }
     *outBgra = bgra;
     *outW = w;
     *outH = h;
@@ -405,6 +409,56 @@ static void test_change_gate_reuses_last_text_appear(void) {
     assert(ev[0].text && strcmp(ev[0].text, "重连") == 0);
 }
 
+// --- (j) a captured-but-black frame (locked desktop, exclusive fullscreen)
+//     is a capture failure, never an empty OCR text: an armed disappear
+//     rule neither confirms nor triggers on it; when the real picture
+//     returns, the state machine resumes where it stood.                  --
+
+static void test_blank_frame_is_unavailable(void) {
+    OcrSession s;
+    setupSession(&s, FALSE);
+    s.regionCount = 1;
+    setRegion(&s, 0, makeRule(OCR_EDGE_DISAPPEAR, "仓库", 2, 95), 0.0, 0.5);
+
+    static const struct Frame frames[] = {
+        {"仓库", 10, TRUE, FALSE}, // seed: armed PRESENT
+        {"",    0, TRUE, TRUE},    // pump 1: black frame
+        {"",    0, TRUE, TRUE},    // pump 2: black, event rate-limited
+        {"",    0, TRUE, TRUE},    // pump 3: black past the 5 s window
+        {"",   20, TRUE, FALSE},   // pump 4: real empty frame, run = 1
+        {"",   20, TRUE, FALSE},   // pump 5: run = 2 -> fires
+    };
+    g_reg[0].frames = frames;
+    g_reg[0].n = 6;
+
+    char err[MSG_BUFSIZE];
+    assert(ocrSessionSeed(&s, err));
+    assert(g_reg[0].reads == 1);
+
+    OcrSessionEvent ev[16];
+    int total = 0;
+    g_fakeNow = 1000;
+    total += pumpOnce(&s, ev + total, (int)(16 - total));
+    g_fakeNow = 2000; // within the 5 s quiet window
+    total += pumpOnce(&s, ev + total, (int)(16 - total));
+    g_fakeNow = 7000;
+    total += pumpOnce(&s, ev + total, (int)(16 - total));
+    assert(countEvent(ev, total, "capture_unavailable") == 2);
+    assert(countEvent(ev, total, "rule_trigger") == 0);
+    assert(g_reg[0].reads == 1); // black frames never reached OCR
+
+    g_fakeNow = 8000;
+    total += pumpOnce(&s, ev + total, (int)(16 - total));
+    g_fakeNow = 9000;
+    total += pumpOnce(&s, ev + total, (int)(16 - total));
+    assert(countEvent(ev, total, "rule_trigger") == 1);
+    assert(countEvent(ev, total, "loss_change") == 1);
+    int trig = -1;
+    for (int i = 0; i < total; i++)
+        if (strcmp(ev[i].event, "rule_trigger") == 0) trig = i;
+    assert(trig == total - 2);
+}
+
 // --- worker: events go through the queue to a main-thread drain ----------
 
 static OcrSessionEvent g_collected[32];
@@ -562,6 +616,7 @@ int main(void) {
     test_worker_busy_skips_beats(); // (e)
     test_change_gate_reuses_last_text_disappear(); // (h)
     test_change_gate_reuses_last_text_appear();    // (i)
+    test_blank_frame_is_unavailable();             // (j)
     test_timeline_rule_source();    // (g)
 
     printf("OK: ocr_session\n");

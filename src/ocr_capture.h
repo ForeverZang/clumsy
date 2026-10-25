@@ -53,6 +53,12 @@ void captureMakeThumbnail(const unsigned char *bgra, int w, int h,
 BOOL captureChanged(const unsigned char *grayA, const unsigned char *grayB,
                     int pixels, int madThreshold);
 
+// TRUE when a successfully captured frame carries no real picture:
+// near-uniform near-black pixels, which is what PrintWindow hands back
+// for a locked desktop or an exclusive-fullscreen window. Such a frame
+// must be handled as a capture failure, never as OCR-observed empty text.
+BOOL captureFrameBlank(const unsigned char *bgra, int w, int h);
+
 // PrintWindow(PW_CLIENTONLY|PW_RENDERFULLCONTENT) of hwnd's client area
 // (or the sub rectangle when non-NULL). On success *outBgra is a malloc'd
 // top-down BGRA buffer released with captureFreeBitmap.

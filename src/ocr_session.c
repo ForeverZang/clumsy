@@ -130,6 +130,13 @@ static int readRegion(OcrSession *s, OcrRegion *rgn, char *text,
     if (!s->captureFn(s->target.hwnd, &rc, &bgra, &w, &h, localErr)) {
         return REGION_UNAVAILABLE;
     }
+    // PrintWindow success with a black/no-picture frame (locked desktop,
+    // exclusive fullscreen) is not empty OCR text: treat it as
+    // unavailable so no armed rule can fire on a frame we never got.
+    if (captureFrameBlank(bgra, w, h)) {
+        captureFreeBitmap(bgra);
+        return REGION_UNAVAILABLE;
+    }
 
     unsigned char gray[OCR_THUMB_W * OCR_THUMB_MAX_H];
     int tw = 0, th = 0;
@@ -171,7 +178,9 @@ BOOL ocrSessionSeed(OcrSession *s, char err[MSG_BUFSIZE]) {
         unsigned char *bgra = NULL;
         int w = 0, h = 0;
         char localErr[MSG_BUFSIZE];
-        if (!s->captureFn(s->target.hwnd, &rc, &bgra, &w, &h, localErr)) {
+        if (!s->captureFn(s->target.hwnd, &rc, &bgra, &w, &h, localErr)
+            || captureFrameBlank(bgra, w, h)) {
+            captureFreeBitmap(bgra); // NULL-safe; blank frame dropped
             continue;
         }
         BOOL readOk = s->readFn(s->engine, bgra, w, h, text, sizeof(text),

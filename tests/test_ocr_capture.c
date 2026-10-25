@@ -187,6 +187,43 @@ int main(void) {
     unsigned char bBig[4] = { 200, 100, 100, 100 }; // MAD 25
     assert(captureChanged(a, bBig, 4, 5));
 
+    // --- captureFrameBlank -------------------------------------------
+
+    // 21. All-zero frame (PrintWindow on a locked/exclusive-fullscreen
+    // window) carries no picture and must be treated as unavailable.
+    size_t px64 = 8u * 8u;
+    unsigned char *black = malloc(px64 * 4u);
+    assert(black);
+    memset(black, 0, px64 * 4u);
+    assert(captureFrameBlank(black, 8, 8));
+
+    // 22. A single bright pixel breaks uniformity: real content present.
+    black[3 * 8 * 4 + 2] = 255;
+    assert(!captureFrameBlank(black, 8, 8));
+    free(black);
+
+    // 23. Uniform near-black below the gray floor is blank; a uniform
+    // dark-theme canvas (#1e1e1e ~ gray 30) is a real picture.
+    unsigned char *nearBlack = malloc(px64 * 4u);
+    assert(nearBlack);
+    memset(nearBlack, 8, px64 * 4u);
+    assert(captureFrameBlank(nearBlack, 8, 8));
+    unsigned char *darkTheme = malloc(px64 * 4u);
+    assert(darkTheme);
+    memset(darkTheme, 30, px64 * 4u);
+    assert(!captureFrameBlank(darkTheme, 8, 8));
+    free(nearBlack);
+    free(darkTheme);
+
+    // 24. NULL/empty input is blank (fail closed), a normal gradient is
+    // not.
+    assert(captureFrameBlank(NULL, 8, 8));
+    unsigned char *grad = malloc(px64 * 4u);
+    assert(grad);
+    for (size_t i = 0; i < px64; i++) memset(grad + i * 4u, (int)(i % 64u), 4u);
+    assert(!captureFrameBlank(grad, 8, 8));
+    free(grad);
+
     printf("OK: ocr_capture\n");
     return 0;
 }

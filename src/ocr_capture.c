@@ -151,6 +151,30 @@ BOOL captureChanged(const unsigned char *grayA, const unsigned char *grayB,
     return diffSum > (unsigned long long)madThreshold * (unsigned)pixels;
 }
 
+// A frame counts as blank only when its darkest-to-brightest span is a
+// few gray levels AND the brightest pixel is still nearly black. Pure
+// PrintWindow black is 0/0; lock-screen and some exclusive-fullscreen
+// captures come back a flat very dark gray. A dark-theme canvas
+// (#1e1e1e ~ 30) already fails the brightness floor.
+#define OCR_BLANK_MAX_GRAY  16
+#define OCR_BLANK_MAX_RANGE 4
+
+BOOL captureFrameBlank(const unsigned char *bgra, int w, int h) {
+    if (!bgra || w <= 0 || h <= 0) return TRUE;
+    unsigned int minG = 255;
+    unsigned int maxG = 0;
+    size_t pixels = (size_t)w * (size_t)h;
+    for (size_t i = 0; i < pixels; i++) {
+        unsigned int g = ((unsigned int)bgra[i * 4]
+                          + bgra[i * 4 + 1]
+                          + bgra[i * 4 + 2]) / 3u;
+        if (g < minG) minG = g;
+        if (g > maxG) maxG = g;
+    }
+    return maxG < OCR_BLANK_MAX_GRAY
+        && (maxG - minG) <= OCR_BLANK_MAX_RANGE;
+}
+
 // --- live window enumeration --------------------------------------------
 
 struct EnumCtx {
