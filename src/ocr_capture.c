@@ -102,11 +102,17 @@ BOOL captureResolveWindow(const CaptureWindow *cands, int candCount,
 // --- thumbnail + change detection ---------------------------------------
 
 void captureMakeThumbnail(const unsigned char *bgra, int w, int h,
-                          int thumbW, unsigned char *grayOut, int *outTh,
+                          int thumbW, int maxThumbH,
+                          unsigned char *grayOut, int *outTh,
                           int *outThumbH) {
     int tw = thumbW > 0 ? thumbW : 1;
+    int maxTh = maxThumbH > 0 ? maxThumbH : 1;
     int th = (int)((double)tw * h / w + 0.5);
     if (th < 1) th = 1;
+    // Rounding and extreme aspect ratios (1xN crops from a degenerate
+    // saved norm) can report a taller thumb than the caller's buffer;
+    // clamp before any write.
+    if (th > maxTh) th = maxTh;
     if (outTh) *outTh = tw;
     if (outThumbH) *outThumbH = th;
 

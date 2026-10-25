@@ -41,9 +41,12 @@ RECT captureMapNorm(int clientW, int clientH, const NormRect *r);
 
 // Downscale a BGRA frame to a gray thumbnail of fixed width (height
 // proportional, at least 1), block-averaged. outTh receives thumbW,
-// outThumbH the computed height; caller sizes grayOut for that.
+// outThumbH the computed height clamped to [1, maxThumbH] so extreme
+// aspect ratios can never overrun the caller's fixed-size gray buffer;
+// size grayOut for thumbW * maxThumbH.
 void captureMakeThumbnail(const unsigned char *bgra, int w, int h,
-                          int thumbW, unsigned char *grayOut, int *outTh,
+                          int thumbW, int maxThumbH,
+                          unsigned char *grayOut, int *outTh,
                           int *outThumbH);
 
 // Mean absolute gray difference strictly greater than madThreshold.

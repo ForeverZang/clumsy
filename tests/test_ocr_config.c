@@ -169,6 +169,28 @@ static void test_validate(void) {
     OcrConfig sepKw = validCfg();
     strcpy(sepKw.rules[0].keywords, " , ，");
     assert(!ocrConfigValidate(&sepKw, err));
+
+    // Degenerate region geometry (hand-edited saved config, shrunken
+    // window) must be refused before it can overflow thumb buffers or
+    // map to an empty crop.
+    OcrConfig zeroW = validCfg();
+    zeroW.rules[0].norm.w = 0.0;
+    assert(!ocrConfigValidate(&zeroW, err));
+    assert(err[0] != '\0');
+
+    OcrConfig tinyH = validCfg();
+    tinyH.rules[0].norm.h = 0.001; // under the ~1% minimum fraction
+    assert(!ocrConfigValidate(&tinyH, err));
+
+    OcrConfig overW = validCfg();
+    overW.rules[0].norm.w = 1.5;
+    assert(!ocrConfigValidate(&overW, err));
+
+    // A small-but-real fraction still validates.
+    OcrConfig thin = validCfg();
+    thin.rules[0].norm.w = 0.02;
+    thin.rules[0].norm.h = 0.02;
+    assert(ocrConfigValidate(&thin, err));
 }
 
 // A freshly dragged region is an unfinished draft: its empty keywords
@@ -204,12 +226,27 @@ static void test_validate_drafts(void) {
     assert(!ocrConfigValidateDrafts(&cfg, drafts, err));
 }
 
+static void test_validate_draft_geometry(void) {
+    char err[MSG_BUFSIZE];
+    BOOL drafts[OCR_CONFIG_RULES_MAX];
+    OcrConfig cfg = validCfg();
+    cfg.ruleCount = 2;
+    cfg.rules[1] = makeRule("Region 1", "", OCR_EDGE_DISAPPEAR, 2, 95,
+                            0.1, 0.9, 0.5, 0.08);
+    memset(drafts, 0, sizeof(drafts));
+    drafts[1] = TRUE;
+    assert(ocrConfigValidateDrafts(&cfg, drafts, err));
+    cfg.rules[1].norm.w = 0.0;
+    assert(!ocrConfigValidateDrafts(&cfg, drafts, err));
+}
+
 int main(void) {
     test_roundtrip();
     test_corrupt_lines_tolerated();
     test_missing_file();
     test_validate();
     test_validate_drafts();
+    test_validate_draft_geometry();
     printf("OK: ocr_config\n");
     return 0;
 }

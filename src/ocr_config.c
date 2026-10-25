@@ -230,6 +230,12 @@ static BOOL hasAnyKeyword(const char *kw) {
     return FALSE;
 }
 
+// Regions smaller than ~1% of the client in either dimension cannot
+// hold legible text and can drive the thumbnail math into degenerate
+// aspect ratios; a picked drag always yields a larger rect, so this
+// only rejects corrupt/hand-edited saved configs.
+#define OCR_RULE_MIN_NORM_FRACTION 0.01
+
 // isDraft[i] == TRUE marks an unfinished rule freshly dragged in the
 // UI: its empty keywords are allowed (the rule can never match until
 // the user fills them in), while every other gate still applies.
@@ -272,6 +278,16 @@ BOOL ocrConfigValidateDrafts(const OcrConfig *cfg, const BOOL *isDraft,
             if (err) {
                 snprintf(err, MSG_BUFSIZE,
                          "rule %u loss percent must be 0..100",
+                         (unsigned)i + 1);
+            }
+            return FALSE;
+        }
+        if (r->norm.w < OCR_RULE_MIN_NORM_FRACTION
+            || r->norm.h < OCR_RULE_MIN_NORM_FRACTION
+            || r->norm.w > 1.0 || r->norm.h > 1.0) {
+            if (err) {
+                snprintf(err, MSG_BUFSIZE,
+                         "rule %u region is empty or outside the window",
                          (unsigned)i + 1);
             }
             return FALSE;

@@ -36,7 +36,8 @@ static void makeThumb(const unsigned char *bgra, int w, int h,
     }
     int gotW = tw;
     int gotH = 1;
-    captureMakeThumbnail(bgra, w, h, tw, gray, &gotW, &gotH);
+    captureMakeThumbnail(bgra, w, h, tw, OCR_THUMB_MAX_H,
+                         gray, &gotW, &gotH);
     *thumbW = gotW;
     *thumbH = gotH;
 }

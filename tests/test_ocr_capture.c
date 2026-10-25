@@ -128,7 +128,7 @@ int main(void) {
     }
     unsigned char gray[64];
     int th = 0, thumbH = 0;
-    captureMakeThumbnail(bgra, 4, 4, 2, gray, &th, &thumbH);
+    captureMakeThumbnail(bgra, 4, 4, 2, 32, gray, &th, &thumbH);
     assert(th == 2 && thumbH == 2);
     assert(gray[0] == 10 && gray[1] == 20);
     assert(gray[2] == 30 && gray[3] == 40);
@@ -136,8 +136,33 @@ int main(void) {
     // 14. Non-square source scales height proportionally.
     unsigned char bgra2[4 * 8 * 4];
     memset(bgra2, 0, sizeof(bgra2));
-    captureMakeThumbnail(bgra2, 8, 4, 4, gray, &th, &thumbH);
+    captureMakeThumbnail(bgra2, 8, 4, 4, 32, gray, &th, &thumbH);
     assert(th == 4 && thumbH == 2);
+
+    // 19. Rounding can report one row over the proportional target; the
+    // caller's maxThumbH cap must hold or the 1024-byte thumb buffers
+    // overflow (32x65 with thumbW 16 would report th=33 uncapped).
+    unsigned char *bgra3 = malloc((size_t)32 * 65 * 4);
+    assert(bgra3);
+    memset(bgra3, 40, (size_t)32 * 65 * 4);
+    int tw3 = 0, th3 = 0;
+    captureMakeThumbnail(bgra3, 32, 65, 16, 32, gray, &tw3, &th3);
+    assert(tw3 == 16);
+    assert(th3 >= 1 && th3 <= 32);
+    free(bgra3);
+
+    // 20. Extreme aspect ratio from a hand-edited saved config
+    // (norm 0,0,0.001,1 on a narrow client -> 1x1920 crop): the reported
+    // height stays inside the fixed 32x32 thumbnail buffer.
+    unsigned char *bgraTall = malloc((size_t)1 * 1920 * 4);
+    assert(bgraTall);
+    memset(bgraTall, 0, (size_t)1 * 1920 * 4);
+    unsigned char grayCap[32 * 32];
+    int twT = 0, thT = 0;
+    captureMakeThumbnail(bgraTall, 1, 1920, 1, 32, grayCap, &twT, &thT);
+    assert(twT == 1);
+    assert(thT >= 1 && thT <= 32);
+    free(bgraTall);
 
     // --- captureChanged ----------------------------------------------
 

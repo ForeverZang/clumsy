@@ -260,6 +260,8 @@ int main(void) {
             r1->edge = OCR_EDGE_APPEAR;
             r1->confirmFrames = 1;
             r1->lossPercent = 50;
+            r1->norm.x = 0.2; r1->norm.y = 0.3;
+            r1->norm.w = 0.3; r1->norm.h = 0.2;
             assert(uiOcrPopulate(&cfg));
             memset(&got, 0, sizeof(got));
             assert(uiOcrGetConfig(&got));
