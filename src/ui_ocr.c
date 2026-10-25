@@ -75,9 +75,13 @@ static unsigned g_regionSeq = 0;
 // ---------------------------------------------------------------------------
 
 static void copyField(char *dst, size_t cap, const char *src) {
+    size_t len;
     if (src == NULL) src = "";
-    strncpy(dst, src, cap - 1);
-    dst[cap - 1] = '\0';
+    // Bounded length + memcpy + explicit terminator keeps -O2's
+    // -Wstringop-truncation quiet without weakening the cap.
+    len = strnlen(src, cap - 1);
+    memcpy(dst, src, len);
+    dst[len] = '\0';
 }
 
 // Strict integer parse; trailing garbage or an empty field is rejected.

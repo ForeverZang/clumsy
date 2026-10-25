@@ -42,5 +42,9 @@ mkdir -p "$OUT/models"
 cp "$OCR/models/PP-OCRv6_det_small.onnx" "$OUT/models/"
 cp "$OCR/models/PP-OCRv6_rec_small.onnx" "$OUT/models/"
 cp "$OCR/models/ppocrv6_dict.txt"        "$OUT/models/"
+# OCR runtime/model licenses (Apache-2.0) travel next to the dll/models.
+cp "$OCR/LICENSE"            "$OUT/LICENSE.RapidOCRLite.txt"
+cp "$OCR/LICENSE-indra-ocr"  "$OUT/LICENSE.IndraOCR.txt"
+cp "$OCR/VENDOR.md"          "$OUT/OCR-VENDOR.md"
 
 echo "== done: $OUT/clumsy.exe"

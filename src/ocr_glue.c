@@ -26,6 +26,14 @@ static char g_exeDir[1024];
 static char g_configPath[1200];
 static OcrConfig g_runCfg;
 
+// Bounded length + memcpy + explicit terminator keeps -O2's
+// -Wstringop-truncation quiet without weakening the cap.
+static void copyBounded(char *dst, size_t cap, const char *src) {
+    size_t len = strnlen(src, cap - 1);
+    memcpy(dst, src, len);
+    dst[len] = '\0';
+}
+
 static int drainCb(Ihandle *ih) {
     (void)ih;
     ocrAppPump();
@@ -37,8 +45,7 @@ static void runDirs(char *timelineDir, size_t dirCap,
     char fallback[1024];
     if (!ocrTimelineDefaultDir(timelineDir, dirCap,
                                fallback, sizeof(fallback))) {
-        strncpy(timelineDir, fallback, dirCap - 1);
-        timelineDir[dirCap - 1] = '\0';
+        copyBounded(timelineDir, dirCap, fallback);
     }
     snprintf(modelsDir, modelsCap, "%s\\%s", g_exeDir, GLUE_MODELS_NAME);
 }
@@ -97,7 +104,7 @@ BOOL uiOcrGlueInit(void) {
     char *slash = strrchr(exe, '\\');
     if (slash) {
         *slash = '\0';
-        strncpy(g_exeDir, exe, sizeof(g_exeDir) - 1);
+        copyBounded(g_exeDir, sizeof(g_exeDir), exe);
         snprintf(g_configPath, sizeof(g_configPath), "%s\\%s",
                  exe, GLUE_CONFIG_NAME);
     }

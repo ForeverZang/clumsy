@@ -68,6 +68,13 @@ pub fn build(b: *std.build.Builder) void {
         "etc/clumsy.rc",
     });
 
+    // Task 1 ruling (2026-10-25): zig builds ship OCR OFF for BOTH arches —
+    // linking the MSVC RapidOCRLite dll is only validated through gcc, and
+    // scripts/build-{debug,release}.sh are the shipping OCR builds. OCR is
+    // off by leaving CLUMSY_OCR UNDEFINED (the guards use #if defined();
+    // passing -DCLUMSY_OCR=0 would still enable them). No OCR translation
+    // unit (src/ocr_*.c, src/ui_ocr*.c, src/ui_picker.c) is registered.
+
     const exe = b.addExecutable("clumsy", null);
 
     switch (conf) {
