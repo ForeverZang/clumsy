@@ -51,6 +51,10 @@ typedef struct {
                    size_t, char[MSG_BUFSIZE]);
     OcrEngine *engine;
     UINT64 (*nowMsFn)(void);  // NULL: GetTickCount64()
+    // Per-tick identity/liveness gate. NULL skips it (unit tests with
+    // sentinel HWNDs); production passes captureTargetAlive so a
+    // destroyed/recycled HWND yields capture_unavailable, never OCR.
+    BOOL (*targetAliveFn)(const CaptureWindow *target);
 
     // Per-pump storage backing OcrSessionEvent.text (one slot per region
     // trigger; reset at the start of every pump).

@@ -224,6 +224,21 @@ int main(void) {
     assert(!captureFrameBlank(grad, 8, 8));
     free(grad);
 
+    // --- captureTargetAlive ------------------------------------------
+
+    // 25. The identity gate fails closed for NULL, an unpinned window,
+    // or a dead/recycled sentinel handle.
+    assert(!captureTargetAlive(NULL));
+    CaptureWindow unpinned;
+    memset(&unpinned, 0, sizeof(unpinned));
+    unpinned.hwnd = (HWND)(uintptr_t)1;
+    assert(!captureTargetAlive(&unpinned)); // pid 0: cannot prove identity
+    CaptureWindow dead;
+    memset(&dead, 0, sizeof(dead));
+    dead.hwnd = (HWND)(uintptr_t)1;
+    dead.pid = 1234;
+    assert(!captureTargetAlive(&dead)); // IsWindow((HWND)1) is false
+
     printf("OK: ocr_capture\n");
     return 0;
 }

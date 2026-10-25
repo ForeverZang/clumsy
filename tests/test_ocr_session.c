@@ -39,6 +39,14 @@ static HANDLE g_entered = NULL;  // auto-reset: worker entered blocked capture
 static HANDLE g_release = NULL;  // auto-reset: let blocked capture return
 static int g_blockedEntries = 0;
 
+// Per-tick target identity gate (production: same HWND still owned by
+// the pinned PID, visible and not minimized).
+static BOOL g_targetAlive = TRUE;
+static BOOL fakeTargetAlive(const CaptureWindow *target) {
+    (void)target;
+    return g_targetAlive;
+}
+
 static BOOL fakeCapture(HWND hwnd, const RECT *rc, unsigned char **outBgra,
                         int *outW, int *outH, char err[MSG_BUFSIZE]) {
     (void)hwnd; (void)err;
@@ -112,10 +120,12 @@ static void setupSession(OcrSession *s, BOOL changeDetect) {
     s->timeline = NULL;
     s->captureFn = fakeCapture;
     s->readFn = fakeRead;
+    s->targetAliveFn = fakeTargetAlive;
     s->engine = NULL;
     s->nowMsFn = fakeNow;
     memset(g_reg, 0, sizeof(g_reg));
     g_fakeNow = 0;
+    g_targetAlive = TRUE;
 }
 
 static void setRegion(OcrSession *s, int i, OcrRule rule,
@@ -459,6 +469,60 @@ static void test_blank_frame_is_unavailable(void) {
     assert(trig == total - 2);
 }
 
+// --- (k) per-tick identity gate: a HWND that died and got recycled to ---
+//     another process is never captured or OCR'd - every region reports
+//     unavailable, no capture happens, no rule can fire. Seed refuses.  --
+
+static void test_target_identity_gate(void) {
+    OcrSession s;
+    setupSession(&s, FALSE);
+    s.regionCount = 1;
+    setRegion(&s, 0, makeRule(OCR_EDGE_DISAPPEAR, "仓库", 2, 95), 0.0, 0.5);
+
+    static const struct Frame frames[] = {
+        {"仓库", 10, TRUE, FALSE}, // seed (capture #0)
+        {"",   20, TRUE, FALSE},    // pump when alive again: run = 1
+        {"",   20, TRUE, FALSE},    // run = 2 -> fires
+    };
+    g_reg[0].frames = frames;
+    g_reg[0].n = 3;
+
+    // Seed refuses while the target is dead/recycled (fail closed).
+    char err[MSG_BUFSIZE];
+    g_targetAlive = FALSE;
+    assert(!ocrSessionSeed(&s, err));
+    assert(err[0] != '\0');
+    assert(g_reg[0].captures == 0);
+
+    // Seed succeeds once it is the target again.
+    g_targetAlive = TRUE;
+    assert(ocrSessionSeed(&s, err));
+
+    // Dead ticks: no capture, no trigger, rate-limited unavailable rows.
+    OcrSessionEvent ev[16];
+    int total = 0;
+    g_targetAlive = FALSE;
+    g_fakeNow = 1000;
+    total += pumpOnce(&s, ev + total, (int)(16 - total));
+    g_fakeNow = 2000;
+    total += pumpOnce(&s, ev + total, (int)(16 - total));
+    g_fakeNow = 7000;
+    total += pumpOnce(&s, ev + total, (int)(16 - total));
+    assert(g_reg[0].captures == 1); // seed only
+    assert(countEvent(ev, total, "capture_unavailable") == 2);
+    assert(countEvent(ev, total, "rule_trigger") == 0);
+
+    // Back to the real target: state machine resumes.
+    g_targetAlive = TRUE;
+    g_fakeNow = 8000;
+    total += pumpOnce(&s, ev + total, (int)(16 - total));
+    g_fakeNow = 9000;
+    total += pumpOnce(&s, ev + total, (int)(16 - total));
+    assert(g_reg[0].captures == 3);
+    assert(countEvent(ev, total, "rule_trigger") == 1);
+    assert(countEvent(ev, total, "loss_change") == 1);
+}
+
 // --- worker: events go through the queue to a main-thread drain ----------
 
 static OcrSessionEvent g_collected[32];
@@ -617,6 +681,7 @@ int main(void) {
     test_change_gate_reuses_last_text_disappear(); // (h)
     test_change_gate_reuses_last_text_appear();    // (i)
     test_blank_frame_is_unavailable();             // (j)
+    test_target_identity_gate();                   // (k)
     test_timeline_rule_source();    // (g)
 
     printf("OK: ocr_session\n");

@@ -255,6 +255,15 @@ BOOL captureIsCapturable(HWND hwnd) {
         && !IsIconic(hwnd);
 }
 
+BOOL captureTargetAlive(const CaptureWindow *target) {
+    DWORD pid = 0;
+    if (!target || !target->hwnd || target->pid == 0) return FALSE;
+    if (!IsWindow(target->hwnd)) return FALSE;
+    GetWindowThreadProcessId(target->hwnd, &pid);
+    if (pid != target->pid) return FALSE; // HWND recycled to another process
+    return IsWindowVisible(target->hwnd) && !IsIconic(target->hwnd);
+}
+
 void captureFreeBitmap(unsigned char *bgra) {
     free(bgra);
 }

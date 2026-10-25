@@ -65,6 +65,11 @@ static BOOL resolveTarget(const OcrConfig *cfg,
             return FALSE;
         }
         *out = *picked;
+        if (out->pid == 0) {
+            // Pin the identity even when the picker omitted the PID;
+            // per-tick captureTargetAlive then detects HWND recycling.
+            GetWindowThreadProcessId(picked->hwnd, &out->pid);
+        }
         return TRUE;
     }
 
@@ -100,6 +105,7 @@ static void buildSession(const OcrConfig *cfg,
     g_app.session.readFn = ocrEngineRead;
     g_app.session.engine = g_app.engine;
     g_app.session.nowMsFn = NULL; // wall clock on the worker thread
+    g_app.session.targetAliveFn = captureTargetAlive;
 }
 
 static void writeLifecycle(const char *event, int lossPercent,

@@ -70,4 +70,11 @@ void captureFreeBitmap(unsigned char *bgra);
 // Window still exists, is visible and not minimized.
 BOOL captureIsCapturable(HWND hwnd);
 
+// Per-tick target identity gate. The HWND must still be a live window
+// owned by the pinned PID, visible and not minimized, so a destroyed
+// handle recycled onto another process can never be captured or OCR'd.
+// Fails closed for NULL/zero-PID targets. Callers populate pid (the
+// picked-window path fills it live when the picker omitted it).
+BOOL captureTargetAlive(const CaptureWindow *target);
+
 #endif // CLUMSY_OCR_CAPTURE_H

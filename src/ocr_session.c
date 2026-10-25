@@ -117,6 +117,13 @@ static BOOL sessionValid(const OcrSession *s) {
         && s->captureFn && s->readFn;
 }
 
+// Per-tick identity gate before any capture: the HWND must still be the
+// live target. A dead/recycled/minimized tick emits the rate-limited
+// unavailable event for every region, triggers nothing, captures nothing.
+static BOOL targetAlive(const OcrSession *s) {
+    return !s->targetAliveFn || s->targetAliveFn(&s->target);
+}
+
 // One capture+OCR attempt on a region.
 #define REGION_UNAVAILABLE 0 // capture or OCR failed
 #define REGION_READ        1 // *text holds fresh OCR text
@@ -165,6 +172,14 @@ BOOL ocrSessionSeed(OcrSession *s, char err[MSG_BUFSIZE]) {
         return FALSE;
     }
     if (err) err[0] = '\0';
+
+    if (s->targetAliveFn && !s->targetAliveFn(&s->target)) {
+        if (err) {
+            strncpy(err, "target window is gone or minimized",
+                    MSG_BUFSIZE - 1);
+        }
+        return FALSE;
+    }
 
     int armed = 0;
     for (size_t i = 0; i < s->regionCount; i++) {
@@ -218,6 +233,12 @@ BOOL ocrSessionPump(OcrSession *s, OcrSessionEvent *ev, int *evCount,
     if (!sessionValid(s) || !ev || !evCount || *evCount > evCap) return FALSE;
 
     s->evTextNext = 0;
+    if (!targetAlive(s)) {
+        for (size_t i = 0; i < s->regionCount; i++) {
+            emitUnavailable(s, (int)i, &s->regions[i], ev, evCount, evCap);
+        }
+        return TRUE;
+    }
     for (size_t i = 0; i < s->regionCount; i++) {
         OcrRegion *rgn = &s->regions[i];
         char text[OCR_READ_TEXT];
