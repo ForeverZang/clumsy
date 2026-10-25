@@ -35,8 +35,8 @@ srcs_for() {
         ocr_session)    SRC="src/ocr_session.c src/ocr_worker.c src/ocr_rules.c \
                          src/ocr_capture.c src/ocr_timeline.c src/procmap.c" ;;
         ocr_config)     SRC="src/ocr_config.c src/ocr_rules.c" ;;
-        ui_simple)      SRC="src/ui_simple.c src/ui_ocr.c src/ocr_config.c \
-                         src/ocr_rules.c src/ocr_capture.c \
+        ui_simple)      SRC="src/ui_simple.c src/ui_ocr.c src/ui_picker.c \
+                         src/ocr_config.c src/ocr_rules.c src/ocr_capture.c \
                          src/traffic.c src/i18n.c src/simple.c \
                          src/targeting.c src/procmap.c src/swfilter.c \
                          src/pktparse.c src/packet.c src/utils.c"

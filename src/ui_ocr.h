@@ -42,6 +42,12 @@ BOOL uiOcrGetConfig(OcrConfig *out);
 // The app context set via uiOcrSetAppContext is never overwritten.
 BOOL uiOcrPopulate(const OcrConfig *cfg);
 
+// Task 9: pick the target window off the screen. Zero visible windows ->
+// FALSE and the inline "no windows" error; one -> picked directly;
+// several -> modal IupList chooser (FALSE = user cancel). Refuses while
+// running or without an app context.
+BOOL uiOcrChooseWindow(CaptureWindow *out);
+
 // Task 9: session-local hand-picked window overrides the saved title.
 void uiOcrSetPickedWindow(const CaptureWindow *win);
 const char *uiOcrSavedWindowTitle(void);
@@ -61,6 +67,14 @@ void uiOcrShowError(const char *keyOrText);
 
 // Test seam: flip the post-map gate (real UI flips it from MAP_CB).
 void uiOcrSetMappedForTest(BOOL mapped);
+
+// Test seam: nth rule row's container (post-map append mapping checks).
+Ihandle *uiOcrRowBoxForTest(size_t i);
+
+// Test seam: append a dragged region using the production placeholder
+// defaults (DISAPPEAR / 2 frames / 95%, "Region N"), skipping the modal
+// rubber-band overlay.
+BOOL uiOcrAddRegionForTest(const NormRect *norm);
 
 // Test seams (widget-level assertions in tests/test_ui_simple.c).
 Ihandle *uiOcrEnableToggleForTest(void);

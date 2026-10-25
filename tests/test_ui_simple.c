@@ -17,6 +17,7 @@
 #include "traffic.h"
 #include "ui_simple.h"
 #include "ui_ocr.h"
+#include "ui_picker.h"
 #include "iup.h"
 
 // Marker callback so pointer identity can be checked on the widget.
@@ -276,6 +277,11 @@ int main(void) {
             assert(uiOcrPopulate(&cfg));
             assert(!uiOcrGetConfig(&got));
 
+            // Restore the field the negative case damaged: the Task 9
+            // positive cases below collect a config that must validate.
+            strcpy(cfg.rules[0].keywords, "仓库");
+            assert(uiOcrPopulate(&cfg));
+
             // Log mirror: the FIRST append grows the buffer from NULL;
             // the fresh realloc block must be NUL-terminated before
             // strcat or it scans heap garbage and corrupts the heap
@@ -327,6 +333,137 @@ int main(void) {
             uiOcrSetRunning(FALSE);
             assert(strcmp(IupGetAttribute(enToggle, "ACTIVE"), "YES") == 0);
 
+            // Task 9: "Choose window" is active once an app context
+            // exists; "Add region" waits for a window picked this
+            // session.
+            assert(strcmp(IupGetAttribute(pick, "ACTIVE"), "YES") == 0);
+            assert(strcmp(IupGetAttribute(addBtn, "ACTIVE"), "NO") == 0);
+            {
+                CaptureWindow pw;
+                NormRect nr;
+                memset(&pw, 0, sizeof(pw));
+                pw.hwnd = (HWND)(INT_PTR)0x5151;
+                strcpy(pw.title, "QA Fixture 窗口");
+                pw.width = 400;
+                pw.height = 300;
+                uiOcrSetPickedWindow(&pw);
+                assert(strcmp(IupGetAttribute(addBtn, "ACTIVE"),
+                              "YES") == 0);
+                assert(strcmp(uiOcrSavedWindowTitle(),
+                              "QA Fixture 窗口") == 0);
+
+                // A picked region appends a placeholder row the user
+                // then fills in: default DISAPPEAR / 2 frames / 95% is
+                // never auto-armed on empty keywords (Start validation
+                // rejects the empty keywords).
+                nr.x = 0.10; nr.y = 0.90; nr.w = 0.50; nr.h = 0.08;
+                assert(uiOcrAddRegionForTest(&nr));
+                memset(&got, 0, sizeof(got));
+                assert(uiOcrGetConfig(&got));
+                assert(got.ruleCount == 3);
+                assert(strcmp(got.rules[2].name, "Region 1") == 0);
+                assert(got.rules[2].keywords[0] == '\0');
+                assert(got.rules[2].edge == OCR_EDGE_DISAPPEAR);
+                assert(got.rules[2].confirmFrames == 2);
+                assert(got.rules[2].lossPercent == 95);
+                assert(fabs(got.rules[2].norm.x - 0.10) < 1e-6);
+                assert(fabs(got.rules[2].norm.y - 0.90) < 1e-6);
+                assert(fabs(got.rules[2].norm.w - 0.50) < 1e-6);
+                assert(fabs(got.rules[2].norm.h - 0.08) < 1e-6);
+
+                uiOcrSetPickedWindow(NULL);
+                assert(strcmp(IupGetAttribute(addBtn, "ACTIVE"),
+                              "NO") == 0);
+            }
+
+            // Running freezes both picker buttons; stop restores the
+            // context-derived states (choose=YES, add=NO after unpick).
+            uiOcrSetRunning(TRUE);
+            assert(strcmp(IupGetAttribute(pick, "ACTIVE"), "NO") == 0);
+            assert(strcmp(IupGetAttribute(addBtn, "ACTIVE"), "NO") == 0);
+            uiOcrSetRunning(FALSE);
+            assert(strcmp(IupGetAttribute(pick, "ACTIVE"), "YES") == 0);
+            assert(strcmp(IupGetAttribute(addBtn, "ACTIVE"), "NO") == 0);
+
+            // Picker drag geometry on a real borderless Win32 window:
+            // screen points -> client-relative, ordered, clamped norms.
+            {
+                NormRect nr2;
+                POINT a, b;
+                HWND target = CreateWindowExW(0, L"Static", L"drag",
+                    WS_POPUP, 100, 100, 400, 300,
+                    NULL, NULL, GetModuleHandleW(NULL), NULL);
+                assert(target != NULL);
+                // 200x110 drag from client (10,30) = screen (110,130).
+                a.x = 110; a.y = 130; b.x = 310; b.y = 240;
+                assert(uiPickerDragToNorm(target, a, b, 6, &nr2));
+                assert(fabs(nr2.x - 0.025) < 1e-6);
+                assert(fabs(nr2.y - 0.10) < 1e-6);
+                assert(fabs(nr2.w - 0.50) < 1e-6);
+                assert(fabs(nr2.h - (110.0 / 300.0)) < 1e-6);
+                // Reversed drag order yields the same rect.
+                assert(uiPickerDragToNorm(target, b, a, 6, &nr2));
+                assert(fabs(nr2.x - 0.025) < 1e-6);
+                assert(fabs(nr2.h - (110.0 / 300.0)) < 1e-6);
+                // Outside-client drag is clamped to the full client.
+                a.x = -50; a.y = -50; b.x = 900; b.y = 900;
+                assert(uiPickerDragToNorm(target, a, b, 6, &nr2));
+                assert(fabs(nr2.x) < 1e-9 && fabs(nr2.y) < 1e-9);
+                assert(fabs(nr2.w - 1.0) < 1e-9);
+                assert(fabs(nr2.h - 1.0) < 1e-9);
+                // A 3x2 drag is below the 6px minimum: refused.
+                a.x = 110; a.y = 130; b.x = 113; b.y = 132;
+                assert(!uiPickerDragToNorm(target, a, b, 6, &nr2));
+                DestroyWindow(target);
+            }
+
+            // Choose policy without UI: one visible top-level window is
+            // picked directly (no modal); an app with zero windows fails.
+            // procmap only lists endpoint-owning processes, so bind a
+            // throwaway loopback UDP socket to make this test exe visible.
+            {
+                WSADATA wsa;
+                SOCKET udp;
+                struct sockaddr_in sa;
+                HWND unique;
+                CaptureWindow cw;
+                RECT ur;
+                char exePath[MAX_PATH], *exeBase;
+
+                WSAStartup(MAKEWORD(2, 2), &wsa);
+                udp = socket(AF_INET, SOCK_DGRAM, 0);
+                assert(udp != INVALID_SOCKET);
+                memset(&sa, 0, sizeof(sa));
+                sa.sin_family = AF_INET;
+                sa.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+                sa.sin_port = 0;
+                assert(bind(udp, (struct sockaddr *)&sa,
+                            sizeof(sa)) == 0);
+
+                unique = CreateWindowExW(WS_EX_APPWINDOW, L"Static",
+                    L"choose direct window",
+                    WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+                    200, 200, 400, 300, NULL, NULL,
+                    GetModuleHandleW(NULL), NULL);
+                assert(unique != NULL);
+                GetClientRect(unique, &ur);
+                GetModuleFileNameA(NULL, exePath, MAX_PATH);
+                exeBase = strrchr(exePath, '\\');
+                uiOcrSetAppContext(exeBase ? exeBase + 1 : exePath);
+                assert(uiOcrChooseWindow(&cw));
+                assert(cw.hwnd == unique);
+                assert(cw.width == ur.right);
+                assert(cw.height == ur.bottom);
+                assert(strcmp(cw.title, "choose direct window") == 0);
+
+                uiOcrSetAppContext("no_such_app_xyz.exe");
+                assert(!uiOcrChooseWindow(&cw));
+
+                DestroyWindow(unique);
+                closesocket(udp);
+                WSACleanup();
+            }
+
             // Restore the field the negative cases damaged and populate
             // an enabled config (the startup restore path from
             // ocr_config.txt).
@@ -344,11 +481,38 @@ int main(void) {
             {
                 const char *mappedValue;
                 Ihandle *dlg = IupDialog(box);
-                IupMap(dlg);
+                // On this Win32 IUP build the native handle of a mapped
+                // control lives in "WID": "HWND" resolves only for
+                // dialog/canvas/flat-* classes, and vbox/hbox/frame/fill
+                // composition nodes carry the (char*)-1 invalid-id
+                // sentinel. A real show is also required -- a bare
+                // IupMap on a hidden dialog creates no classic controls.
+                BOOL isMapped(Ihandle *e) {
+                    const char *wid = IupGetAttribute(e, "WID");
+                    return wid != NULL
+                        && wid != (const char *)(UINT_PTR)-1;
+                }
+                IupShowXY(dlg, IUP_CENTER, IUP_CENTER);
                 mappedValue = IupGetAttribute(enToggle, "VALUE");
                 assert(mappedValue != NULL
                        && strcmp(mappedValue, "ON") == 0);
-                IupUnmap(dlg);
+                // Rows present before show map wholesale with dialog.
+                assert(isMapped(IupGetChild(uiOcrRowBoxForTest(0), 0)));
+
+                // "Add region" after show must map the new row subtree
+                // immediately; an unmapped child takes layout space but
+                // paints blank (2 populated rows -> new row is index 2).
+                // The hbox row itself is a composition node (sentinel
+                // WID); its first field (the name text) proves the
+                // subtree was mapped.
+                {
+                    NormRect postRect = { 0.05, 0.05, 0.20, 0.20 };
+                    Ihandle *newRow;
+                    assert(uiOcrAddRegionForTest(&postRect));
+                    newRow = uiOcrRowBoxForTest(2);
+                    assert(newRow != NULL);
+                    assert(isMapped(IupGetChild(newRow, 0)));
+                }
                 IupDestroy(dlg); // owns box
             }
         }

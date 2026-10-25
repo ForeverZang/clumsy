@@ -171,11 +171,45 @@ static void test_validate(void) {
     assert(!ocrConfigValidate(&sepKw, err));
 }
 
+// A freshly dragged region is an unfinished draft: its empty keywords
+// do not make the collected config invalid (the rule is inert at
+// runtime because no keyword can match), but every other gate still
+// applies, and a finished row with empty keywords is still refused.
+static void test_validate_drafts(void) {
+    char err[MSG_BUFSIZE];
+    BOOL drafts[OCR_CONFIG_RULES_MAX];
+
+    OcrConfig cfg = validCfg();
+    cfg.ruleCount = 2;
+    cfg.rules[1] = makeRule("Region 1", "", OCR_EDGE_DISAPPEAR, 2, 95,
+                            0.1, 0.9, 0.5, 0.08);
+    memset(drafts, 0, sizeof(drafts));
+    drafts[1] = TRUE;
+    assert(ocrConfigValidateDrafts(&cfg, drafts, err));
+
+    // NULL drafts is the strict gate: the same config fails.
+    assert(!ocrConfigValidateDrafts(&cfg, NULL, err));
+
+    // Draft status exempts only the keyword gate: bad frames/loss fail.
+    cfg.rules[1].confirmFrames = 0;
+    assert(!ocrConfigValidateDrafts(&cfg, drafts, err));
+    cfg.rules[1].confirmFrames = 2;
+    cfg.rules[1].lossPercent = 120;
+    assert(!ocrConfigValidateDrafts(&cfg, drafts, err));
+    cfg.rules[1].lossPercent = 95;
+    assert(ocrConfigValidateDrafts(&cfg, drafts, err));
+
+    // A finished (non-draft) row keeps the strict keyword requirement.
+    drafts[1] = FALSE;
+    assert(!ocrConfigValidateDrafts(&cfg, drafts, err));
+}
+
 int main(void) {
     test_roundtrip();
     test_corrupt_lines_tolerated();
     test_missing_file();
     test_validate();
+    test_validate_drafts();
     printf("OK: ocr_config\n");
     return 0;
 }

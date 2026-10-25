@@ -9,6 +9,7 @@
 #include "common.h"
 #include "i18n.h"
 #include "ui_ocr.h"
+#include "ui_picker.h"
 
 #if defined(CLUMSY_OCR)
 
@@ -40,6 +41,10 @@ typedef struct {
     Ihandle *loss;
     Ihandle *del;
     NormRect norm;
+    // TRUE for an unfinished region just dragged in: empty keywords
+    // are tolerated at collection (the row is inert), but Start's
+    // strict ocrConfigValidate gate still refuses them.
+    BOOL draft;
 } OcrRow;
 
 static Icallback g_actionCb = NULL;
@@ -66,6 +71,7 @@ static BOOL g_enabled = FALSE;
 static BOOL g_running = FALSE;
 static BOOL g_hasPicked = FALSE;
 static HWND g_pickedHwnd = NULL;
+static unsigned g_regionSeq = 0;
 
 // ---------------------------------------------------------------------------
 // small helpers
@@ -121,6 +127,16 @@ static void refreshWindowLabel(void) {
                                                : tr("ocr.winNone"));
     IupSetAttribute(g_windowLabel, "FGCOLOR",
                     g_windowTitle[0] != '\0' ? "0 0 0" : "110 110 110");
+}
+
+// Choose needs a concrete app context; Add region needs a window picked
+// this session. A running session freezes both (uiOcrSetRunning).
+static void refreshPickerButtons(void) {
+    if (g_chooseBtn == NULL || g_addBtn == NULL) return;
+    IupSetAttribute(g_chooseBtn, "ACTIVE",
+                    (!g_running && g_appExe[0] != '\0') ? "YES" : "NO");
+    IupSetAttribute(g_addBtn, "ACTIVE",
+                    (!g_running && g_hasPicked) ? "YES" : "NO");
 }
 
 // ---------------------------------------------------------------------------
@@ -238,7 +254,36 @@ static void addRuleRow(const OcrRule *rule) {
                      r->frames, r->loss, r->del, NULL);
     IupSetAttribute(r->box, "GAP", OCR_COL_GAP);
     IupAppend(g_ruleBox, r->box);
+    // A child appended to a mapped dialog must be mapped explicitly or
+    // it takes layout space but paints blank. Gate on the dialog's native
+    // handle, not g_uiMapped: vbox/frame composition nodes never get a
+    // WID themselves, config populate can run while the test seam's
+    // mapped flag is already set, and before uiOcrCreate's frame is
+    // inserted into a dialog IupGetDialog returns NULL (pre-map path).
+    {
+        Ihandle *dlg = IupGetDialog(g_ruleBox);
+        if (dlg != NULL && IupGetAttribute(dlg, "WID") != NULL)
+            IupMap(r->box);
+    }
     IupRefresh(g_ruleBox);
+}
+
+// Append a freshly dragged region as a placeholder rule the user then
+// fills in. Defaults follow the design: DISAPPEAR / 2 frames / 95% are
+// NOT auto-armed, because the empty keywords fail Start validation.
+static BOOL addRegionFromNorm(const NormRect *norm) {
+    OcrRule rule;
+    if (norm == NULL || g_rowCount >= OCR_CONFIG_RULES_MAX) return FALSE;
+    memset(&rule, 0, sizeof(rule));
+    g_regionSeq++;
+    snprintf(rule.name, sizeof(rule.name), "Region %u", g_regionSeq);
+    rule.edge = OCR_EDGE_DISAPPEAR;
+    rule.confirmFrames = 2;
+    rule.lossPercent = 95;
+    rule.norm = *norm;
+    addRuleRow(&rule);
+    g_rows[g_rowCount - 1].draft = TRUE;
+    return TRUE;
 }
 
 static void clearRows(void) {
@@ -289,6 +334,59 @@ static int openDirCb(Ihandle *ih) {
     return IUP_DEFAULT;
 }
 
+// Enumerate the selected app's visible top-level windows: zero ->
+// inline error (the user fixes the app choice); one -> picked directly;
+// several -> modal IupList chooser. Shared by the button and the
+// headless acceptance harness.
+BOOL uiOcrChooseWindow(CaptureWindow *out) {
+    CaptureWindow wins[32];
+    int n;
+    if (out == NULL) return FALSE;
+    if (g_running || g_appExe[0] == '\0') return FALSE;
+
+    n = captureEnumWindowsForApp(g_appExe, wins, 32);
+    if (n <= 0) {
+        uiOcrShowError("ocr.error.noWindows");
+        return FALSE;
+    }
+    if (n == 1) {
+        *out = wins[0];
+        return TRUE;
+    }
+    return uiPickerPickWindow(g_appExe, out); // FALSE = user cancel
+}
+
+static int chooseWindowCb(Ihandle *ih) {
+    CaptureWindow picked;
+    UNREFERENCED_PARAMETER(ih);
+    if (!uiOcrChooseWindow(&picked)) return IUP_DEFAULT;
+    uiOcrSetPickedWindow(&picked);
+    showErrorText("");
+    return IUP_DEFAULT;
+}
+
+// "Add region": rubber-band on the picked window, then append a
+// placeholder row. The button is disabled without a picked window, so
+// the guards only defend against stale windows.
+static int addRegionCb(Ihandle *ih) {
+    NormRect norm;
+    UNREFERENCED_PARAMETER(ih);
+    if (g_running || !g_hasPicked || g_pickedHwnd == NULL) return IUP_DEFAULT;
+    if (!captureIsCapturable(g_pickedHwnd)) {
+        uiOcrShowError("ocr.error.windowStale");
+        return IUP_DEFAULT;
+    }
+    // FALSE covers user cancel (ESC / right-click) and an undersized drag
+    // (the overlay lets the user try again, so it simply returns there).
+    if (!uiPickerPickRect(g_pickedHwnd, &norm)) return IUP_DEFAULT;
+    if (!addRegionFromNorm(&norm)) return IUP_DEFAULT;
+    showErrorText("");
+    // The new row grows the body's natural size post-map; re-fit the
+    // RESIZE=NO dialog exactly like a fold/expand does.
+    if (g_uiMapped && g_layoutChanged != NULL) g_layoutChanged();
+    return IUP_DEFAULT;
+}
+
 // ---------------------------------------------------------------------------
 // config collection / population
 // ---------------------------------------------------------------------------
@@ -326,8 +424,10 @@ static BOOL collectRow(size_t i, OcrRule *out) {
 
 BOOL uiOcrGetConfig(OcrConfig *out) {
     char err[MSG_BUFSIZE];
+    BOOL drafts[OCR_CONFIG_RULES_MAX];
     int interval;
     if (out == NULL) return FALSE;
+    memset(drafts, 0, sizeof(drafts));
     memset(out, 0, sizeof(*out));
 
     out->enabled = g_enabled;
@@ -350,9 +450,12 @@ BOOL uiOcrGetConfig(OcrConfig *out) {
     out->ruleCount = g_rowCount;
     for (size_t i = 0; i < g_rowCount; i++) {
         if (!collectRow(i, &out->rules[i])) return FALSE;
+        drafts[i] = g_rows[i].draft;
     }
-    if (!ocrConfigValidate(out, err)) {
-        // Keyword emptiness and the enabled-needs-exe gate land here.
+    if (!ocrConfigValidateDrafts(out, drafts, err)) {
+        // Keyword emptiness on finished rows and the enabled-needs-exe
+        // gate land here. Freshly dragged, unfinished rows are exempt
+        // (they stay inert); Start runs the strict gate before arming.
         showErrorText(err);
         return FALSE;
     }
@@ -367,8 +470,12 @@ BOOL uiOcrPopulate(const OcrConfig *cfg) {
 
     copyField(g_windowTitle, sizeof(g_windowTitle), cfg->windowTitle);
     refreshWindowLabel();
+    // Populate is a load/reset: the session-local hand pick is dropped,
+    // and dragged-region numbering starts over ("Region 1").
     g_hasPicked = FALSE;
     g_pickedHwnd = NULL;
+    g_regionSeq = 0;
+    refreshPickerButtons();
 
     snprintf(value, sizeof(value), "%d",
              cfg->intervalMs > 0 ? cfg->intervalMs
@@ -394,6 +501,7 @@ BOOL uiOcrPopulate(const OcrConfig *cfg) {
 
 void uiOcrSetAppContext(const char *exe) {
     copyField(g_appExe, sizeof(g_appExe), exe);
+    refreshPickerButtons();
 }
 
 void uiOcrSetLossApplier(OcrLossApplier fn) {
@@ -419,6 +527,7 @@ void uiOcrSetPickedWindow(const CaptureWindow *win) {
         copyField(g_windowTitle, sizeof(g_windowTitle), win->title);
     }
     refreshWindowLabel();
+    refreshPickerButtons();
 }
 
 const char *uiOcrSavedWindowTitle(void) {
@@ -438,9 +547,10 @@ void uiOcrSetRunning(BOOL running) {
     IupSetAttribute(g_enableToggle, "ACTIVE", running ? "NO" : "YES");
     IupSetAttribute(g_body, "ACTIVE", running ? "NO" : "YES");
     IupSetAttribute(g_startBtn, "ACTIVE", "YES");
-    // Task 8 ships the picker buttons as disabled placeholders.
-    IupSetAttribute(g_chooseBtn, "ACTIVE", "NO");
-    IupSetAttribute(g_addBtn, "ACTIVE", "NO");
+    // While running both picker buttons are frozen; on stop they return
+    // to the context-derived states (choose needs the app, add needs a
+    // picked window).
+    refreshPickerButtons();
     IupStoreAttribute(g_startBtn, "TITLE",
                       running ? tr("action.stop") : tr("action.start"));
 }
@@ -483,7 +593,8 @@ static Ihandle *buildWindowRow(void) {
 
     g_chooseBtn = IupButton(tr("ocr.choose"), NULL);
     i18nBind(g_chooseBtn, "TITLE", "ocr.choose");
-    IupSetAttribute(g_chooseBtn, "ACTIVE", "NO"); // Task 9
+    IupSetAttribute(g_chooseBtn, "ACTIVE", "NO");
+    IupSetCallback(g_chooseBtn, "ACTION", (Icallback)chooseWindowCb);
 
     lbl = IupLabel(tr("ocr.window"));
     i18nBind(lbl, "TITLE", "ocr.window");
@@ -571,7 +682,8 @@ Ihandle *uiOcrCreate(Icallback actionCbImpl) {
 
     g_addBtn = IupButton(tr("ocr.addRegion"), NULL);
     i18nBind(g_addBtn, "TITLE", "ocr.addRegion");
-    IupSetAttribute(g_addBtn, "ACTIVE", "NO"); // Task 9
+    IupSetAttribute(g_addBtn, "ACTIVE", "NO");
+    IupSetCallback(g_addBtn, "ACTION", (Icallback)addRegionCb);
     addRow = IupHbox(g_addBtn, IupFill(), NULL);
 
     g_ruleBox = IupVbox(NULL);
@@ -639,6 +751,17 @@ Ihandle *uiOcrCreate(Icallback actionCbImpl) {
 
 void uiOcrSetMappedForTest(BOOL mapped) { g_uiMapped = mapped; }
 
+// Drives the same append path the Add-region button uses, without the
+// modal overlay.
+BOOL uiOcrAddRegionForTest(const NormRect *norm) {
+    return addRegionFromNorm(norm);
+}
+
+Ihandle *uiOcrRowBoxForTest(size_t i) {
+    if (i >= g_rowCount) return NULL;
+    return g_rows[i].box;
+}
+
 Ihandle *uiOcrEnableToggleForTest(void) { return g_enableToggle; }
 Ihandle *uiOcrChooseButtonForTest(void) { return g_chooseBtn; }
 Ihandle *uiOcrAddButtonForTest(void) { return g_addBtn; }
@@ -661,6 +784,10 @@ void uiOcrSetLayoutChangedCallback(OcrLayoutChangedFn fn) { (void)fn; }
 BOOL uiOcrEnabled(void) { return FALSE; }
 BOOL uiOcrGetConfig(OcrConfig *out) { (void)out; return FALSE; }
 BOOL uiOcrPopulate(const OcrConfig *cfg) { (void)cfg; return FALSE; }
+BOOL uiOcrChooseWindow(CaptureWindow *out) {
+    (void)out;
+    return FALSE;
+}
 void uiOcrSetPickedWindow(const CaptureWindow *win) { (void)win; }
 const char *uiOcrSavedWindowTitle(void) { return ""; }
 BOOL uiOcrHasPickedWindow(void) { return FALSE; }
@@ -676,5 +803,13 @@ Ihandle *uiOcrStartButtonForTest(void) { return NULL; }
 Ihandle *uiOcrBodyForTest(void) { return NULL; }
 Ihandle *uiOcrLogForTest(void) { return NULL; }
 void uiOcrSetMappedForTest(BOOL mapped) { (void)mapped; }
+BOOL uiOcrAddRegionForTest(const NormRect *norm) {
+    (void)norm;
+    return FALSE;
+}
+Ihandle *uiOcrRowBoxForTest(size_t i) {
+    (void)i;
+    return NULL;
+}
 
 #endif // CLUMSY_OCR

@@ -14,6 +14,7 @@
 #include "ui_advanced.h"
 #if defined(CLUMSY_OCR)
 #include "ui_ocr.h"
+#include "ui_picker.h"
 #endif
 
 Module* modules[MODULE_CNT] = {
@@ -33,9 +34,11 @@ static const char *g_shotPath = NULL;
 static HDESK g_privateDesk = NULL;
 static BOOL g_mapped = FALSE;
 
-// Grab the dialog client into a 24-bit BMP. Used on a private desktop,
-// whose GDI surface renders even while the interactive desktop is locked.
-static void saveBmp(HWND hwnd, const char *path) {
+// Grab a window client into a 24-bit BMP. Used on a private desktop,
+// whose GDI surface renders even while the interactive desktop is
+// locked. redraw=FALSE skips the forced repaint (desktop grabs while a
+// layered overlay is up must not invalidate the whole screen).
+static void saveBmpFlags(HWND hwnd, const char *path, BOOL redraw) {
     RECT rc;
     int w, h, rowSize, imgSize, y;
     HDC win, mem;
@@ -47,8 +50,10 @@ static void saveBmp(HWND hwnd, const char *path) {
 
     GetClientRect(hwnd, &rc);
     w = rc.right; h = rc.bottom;
-    RedrawWindow(hwnd, NULL, NULL,
-                 RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
+    if (redraw) {
+        RedrawWindow(hwnd, NULL, NULL,
+                     RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
+    }
     win = GetDC(hwnd);
     mem = CreateCompatibleDC(win);
     bmp = CreateCompatibleBitmap(win, w, h);
@@ -86,6 +91,10 @@ static void saveBmp(HWND hwnd, const char *path) {
     DeleteObject(bmp);
     DeleteDC(mem);
     ReleaseDC(hwnd, win);
+}
+
+static void saveBmp(HWND hwnd, const char *path) {
+    saveBmpFlags(hwnd, path, TRUE);
 }
 
 static int noop(Ihandle *ih) { (void)ih; return IUP_DEFAULT; }
@@ -452,6 +461,155 @@ static void setupOcr(BOOL expanded) {
         uiOcrAppendLog("2026-10-26 10:30:31 loss_change 95->50 source=ocr");
     }
 }
+
+// --- pickwindow / picklist / pickrect headless flows -------------------
+//
+// clumsy only enumerates windows of processes that own network
+// endpoints (procmap), so these modes bind a throwaway UDP socket and
+// pick THIS harness process: its main dialog is the unique top-level
+// window. picklist adds a second visible window to force the modal
+// IupList; pickrect then drives the rubber band through test seams.
+static char g_pickExe[128] = "";
+static const char *g_overlayShot = NULL;
+static SOCKET g_udpSocket = INVALID_SOCKET;
+static HWND g_extraWin = NULL;
+
+static void ownExeName(char *buf, size_t cap) {
+    char path[MAX_PATH];
+    char *base;
+    DWORD n = GetModuleFileNameA(NULL, path, MAX_PATH);
+    (void)n;
+    base = strrchr(path, '\\');
+    strncpy(buf, base != NULL ? base + 1 : path, cap - 1);
+    buf[cap - 1] = '\0';
+}
+
+static void bindUdpEndpoint(void) {
+    WSADATA wsa;
+    struct sockaddr_in addr;
+    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) return;
+    g_udpSocket = socket(AF_INET, SOCK_DGRAM, 0);
+    if (g_udpSocket == INVALID_SOCKET) return;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr.sin_port = 0;
+    if (bind(g_udpSocket, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
+        closesocket(g_udpSocket);
+        g_udpSocket = INVALID_SOCKET;
+    }
+}
+
+static HWND createExtraWindow(void) {
+    return CreateWindowExW(WS_EX_APPWINDOW, L"Static",
+        L"QA Fixture 二号窗口 (stand-in)",
+        WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+        120, 120, 360, 220, NULL, NULL, GetModuleHandleW(NULL), NULL);
+}
+
+static void setupPickerOcr(void) {
+    OcrConfig cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    strcpy(cfg.exeName, g_pickExe);
+    cfg.enabled = TRUE;
+    cfg.changeDetect = TRUE;
+    cfg.intervalMs = 500;
+    cfg.ruleCount = 0;
+    uiOcrSetAppContext(g_pickExe);
+    uiOcrPopulate(&cfg);
+}
+
+// Fires while uiPickerPickRect's nested loop is open: paint a band in
+// the lower dialog area, optionally grab the screen, then accept.
+static int dragSimCb(Ihandle *ih) {
+    HWND dh = (HWND)(INT_PTR)IupGetAttribute(dialog, "HWND");
+    RECT rc;
+    POINT a, b;
+    IupSetAttribute(ih, "RUN", "NO");
+    if (dh == NULL || !GetClientRect(dh, &rc)) return IUP_DEFAULT;
+    a.x = rc.right * 10 / 100;  a.y = rc.bottom * 78 / 100;
+    b.x = rc.right * 62 / 100;  b.y = rc.bottom * 90 / 100;
+    ClientToScreen(dh, &a);
+    ClientToScreen(dh, &b);
+    uiPickerSetDragForTest(a, b);
+    // Grab the overlay canvas itself: on a non-active private desktop
+    // the desktop DC does not composite, but per-window DCs render.
+    if (g_overlayShot != NULL) {
+        HWND ov = uiPickerOverlayHwndForTest();
+        if (ov != NULL) saveBmpFlags(ov, g_overlayShot, FALSE);
+    }
+    if (!uiPickerCompleteDragForTest())
+        printf("pickrect: simulated drag rejected\n");
+    return IUP_DEFAULT;
+}
+
+static int pickerFlowCb(Ihandle *ih) {
+    CaptureWindow win;
+    IupSetAttribute(ih, "RUN", "NO");
+    // Same production entry point as the "Choose window" button:
+    // unique window picks directly, two windows open the modal chooser
+    // (dismissed by pickerAcceptCb in picklist mode).
+    if (!uiOcrChooseWindow(&win)) {
+        printf("pickwindow: cancelled or no windows for %s\n", g_pickExe);
+        return IUP_DEFAULT;
+    }
+    printf("pickwindow: picked hwnd=%p title=%s\n",
+           (void *)win.hwnd, win.title);
+    uiOcrSetPickedWindow(&win);
+    fitDialogLive();
+    IupUpdate(dialog);
+
+    if (strcmp(g_mode, "pickrect") != 0) return IUP_DEFAULT;
+    {
+        NormRect norm;
+        Ihandle *dragTimer = IupTimer();
+        IupSetAttribute(dragTimer, "TIME", "700");
+        IupSetCallback(dragTimer, "ACTION_CB", (Icallback)dragSimCb);
+        IupSetAttribute(dragTimer, "RUN", "YES");
+        if (!uiPickerPickRect(win.hwnd, &norm)) {
+            printf("pickrect: cancelled\n");
+            return IUP_DEFAULT;
+        }
+        printf("pickrect: norm=%.3f,%.3f,%.3f,%.3f\n",
+               norm.x, norm.y, norm.w, norm.h);
+        if (uiOcrAddRegionForTest(&norm)) {
+            fitDialogLive();
+            IupUpdate(dialog);
+        }
+    }
+    return IUP_DEFAULT;
+}
+
+// picklist: grab the open chooser, then close it with OK.
+static int pickerAcceptCb(Ihandle *ih) {
+    IupSetAttribute(ih, "RUN", "NO");
+    if (g_overlayShot != NULL) {
+        HWND ch = uiPickerChooserHwndForTest();
+        if (ch != NULL) saveBmpFlags(ch, g_overlayShot, FALSE);
+    }
+    uiPickerAcceptChooserForTest();
+    return IUP_DEFAULT;
+}
+
+static BOOL isPickerMode(const char *m) {
+    return strcmp(m, "pickwindow") == 0
+        || strcmp(m, "picklist") == 0
+        || strcmp(m, "pickrect") == 0;
+}
+
+static void startPickerTimers(void) {
+    Ihandle *flow;
+    if (strcmp(g_mode, "picklist") == 0) {
+        Ihandle *accept = IupTimer();
+        IupSetAttribute(accept, "TIME", "1100");
+        IupSetCallback(accept, "ACTION_CB", (Icallback)pickerAcceptCb);
+        IupSetAttribute(accept, "RUN", "YES");
+    }
+    flow = IupTimer();
+    IupSetAttribute(flow, "TIME", "500");
+    IupSetCallback(flow, "ACTION_CB", (Icallback)pickerFlowCb);
+    IupSetAttribute(flow, "RUN", "YES");
+}
 #endif
 
 int main(int argc, char **argv) {
@@ -476,6 +634,15 @@ int main(int argc, char **argv) {
     if (argc > 4) g_shotPath = argv[4];
     if (argc > 5) g_mode = argv[5];
     advMode = strcmp(g_mode, "adv") == 0 || strcmp(g_mode, "runadv") == 0;
+#if defined(CLUMSY_OCR)
+    if (isPickerMode(g_mode)) {
+        ownExeName(g_pickExe, sizeof(g_pickExe));
+        if (argc > 6 && argv[6][0] != '\0')
+            strncpy(g_pickExe, argv[6], sizeof(g_pickExe) - 1);
+        if (argc > 7) g_overlayShot = argv[7];
+        bindUdpEndpoint();
+    }
+#endif
 
     uiAdvancedLoadConfig();
     IupOpen(&argc, &argv);
@@ -491,7 +658,10 @@ int main(int argc, char **argv) {
         // Folding section ⑤ changes its natural size post-map; the OCR
         // block asks the host to re-fit the RESIZE=NO dialog.
         uiOcrSetLayoutChangedCallback(fitDialogLive);
-        setupOcr(strcmp(g_mode, "ocr") == 0);
+        if (isPickerMode(g_mode))
+            setupPickerOcr();
+        else
+            setupOcr(strcmp(g_mode, "ocr") == 0);
     }
 #endif
 
@@ -542,6 +712,13 @@ int main(int argc, char **argv) {
     IupShowXY(dialog, IUP_CENTER, IUP_CENTER);
     g_mapped = TRUE;
     fitDialogLive();
+
+#if defined(CLUMSY_OCR)
+    if (isPickerMode(g_mode)) {
+        if (strcmp(g_mode, "picklist") == 0) g_extraWin = createExtraWindow();
+        startPickerTimers();
+    }
+#endif
 
     if (strcmp(g_mode, "run") == 0 || strcmp(g_mode, "runadv") == 0) {
         Ihandle *phase = IupTimer();

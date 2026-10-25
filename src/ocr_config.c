@@ -230,7 +230,12 @@ static BOOL hasAnyKeyword(const char *kw) {
     return FALSE;
 }
 
-BOOL ocrConfigValidate(const OcrConfig *cfg, char err[MSG_BUFSIZE]) {
+// isDraft[i] == TRUE marks an unfinished rule freshly dragged in the
+// UI: its empty keywords are allowed (the rule can never match until
+// the user fills them in), while every other gate still applies.
+// NULL means every rule is finished (strict keyword gate).
+BOOL ocrConfigValidateDrafts(const OcrConfig *cfg, const BOOL *isDraft,
+                             char err[MSG_BUFSIZE]) {
     if (!cfg) {
         if (err) strncpy(err, "null OCR config", MSG_BUFSIZE - 1);
         return FALSE;
@@ -248,7 +253,7 @@ BOOL ocrConfigValidate(const OcrConfig *cfg, char err[MSG_BUFSIZE]) {
     }
     for (size_t i = 0; i < cfg->ruleCount; i++) {
         const OcrRule *r = &cfg->rules[i];
-        if (!hasAnyKeyword(r->keywords)) {
+        if ((isDraft == NULL || !isDraft[i]) && !hasAnyKeyword(r->keywords)) {
             if (err) {
                 snprintf(err, MSG_BUFSIZE,
                          "rule %u has no keywords", (unsigned)i + 1);
@@ -274,4 +279,8 @@ BOOL ocrConfigValidate(const OcrConfig *cfg, char err[MSG_BUFSIZE]) {
     }
     if (err) err[0] = '\0';
     return TRUE;
+}
+
+BOOL ocrConfigValidate(const OcrConfig *cfg, char err[MSG_BUFSIZE]) {
+    return ocrConfigValidateDrafts(cfg, NULL, err);
 }

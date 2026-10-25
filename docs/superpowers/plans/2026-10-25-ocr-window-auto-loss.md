@@ -394,24 +394,24 @@ void uiSimpleAppendSection(Ihandle *child); // 在现有 4 块之后、按钮之
 void uiSimpleApplyExternalLoss(int percent);// 设 g_percent+滑块 VALUE+标签+simpleSetLoss
 ```
 
-- [ ] **Step 1: 写失败测试**（扩展 tests/test_ui_simple.c section 0）
+- [x] **Step 1: 写失败测试**（扩展 tests/test_ui_simple.c section 0）
 
 `uiOcrCreate(NULL)` 后默认折叠/未启用；启用后能收集配置，非法行（空关键词、档位 120、帧数 0）让 `uiOcrGetConfig` 返回 FALSE；`uiOcrPopulate` 两条假规则后行数=2 且收集回的关键词/档位一致；`uiSimpleApplyExternalLoss(7)` 后 `uiSimpleLoss()==700` 且滑块 VALUE=7。
 Expected before impl: 编译失败（符号不存在）→ RED。
 
-- [ ] **Step 2: 实现 UI 主体**
+- [x] **Step 2: 实现 UI 主体**
 
 IupFrame 折叠条（FlatToggle「启用自动测试（OCR）」），展开体：窗口只读行+「选择窗口…」按钮（Task 9 接）、「+ 添加区域（拖框）」按钮（Task 9 接，先占位禁用态可后续放开）、规则行容器（每行：名称/关键词/下拉/帧数/档位/删除，行数据存控件原生指针）、间隔 IupText + 变化检测 IupToggle、开始/停止（同一 toggle 回调，main 传入——uiOcrCreate 带 actionCb 参数，签名加一个 Icallback）、IupMultiLine 只读 6–8 行高（APPENDVALUE 后 SETPOS 末尾）、路径 FlatLabel 预留宽 + 「打开目录」FlatButton（explorer /select,）。i18n keys：`ocr.title/enable/window/choose/addRegion/name/keywords/edge.appear/edge.disappear/frames/loss/interval/changeDetect/start/stop/csvPath/openDir/enabled-blocked-app/error.windowStale/error.invalidRow/...`（zh/EN 成对，test_i18n 完整性把关）。文件尾部在同文件内写 `#else` 桩分支。
 
-- [ ] **Step 3: 实现 ui_simple 两接缝**
+- [x] **Step 3: 实现 ui_simple 两接缝**
 
 Append 在流量图 Frame 之后、绿色按钮 vbox 之前；ExternalLoss 同时更新 g_percent、滑块控件 VALUE、百分比 label 与 simpleSetLoss（复用现有 label 更新静态函数）。
 
-- [ ] **Step 4: 验证**：`scripts/run_tests.sh` 全绿（含 test_i18n 新键完整性）。
-- [ ] **Step 5: 手动视觉（manual_ui  harness 加 ocr 占位模式）**
+- [x] **Step 4: 验证**：`scripts/run_tests.sh` 全绿（含 test_i18n 新键完整性）。
+- [x] **Step 5: 手动视觉（manual_ui  harness 加 ocr 占位模式）**
 
 在 tests/manual_ui.c 挂入 `uiOcrCreate(NULL)` + `uiOcrPopulate`（静态假配置两条规则），截 zh/en 折叠态+展开态，确认无裁切、主窗口宽度不被规则行撑宽（内部滚动或换行由截图定）。
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/ui_ocr.* src/ui_simple.* src/i18n.c tests/test_ui_simple.c tests/manual_ui.c scripts/run_tests.sh
@@ -434,11 +434,11 @@ BOOL uiPickerPickWindow(const char *exeName, CaptureWindow *out); // 模态 IupL
 BOOL uiPickerPickRect(HWND target, NormRect *out);
 ```
 
-- [ ] **Step 1: 实现窗口选择对话框**（IupList 弹窗，标题 + 尺寸，确定/取消；无可见窗口时内联提示）。
-- [ ] **Step 2: 实现拖框覆盖层**（无边框 IupDialog+canvas，定位到目标窗口所在显示器工作区；GDI 画半透明遮罩与橡皮筋；落点用 ScreenToClient 换算客户区比例；目标窗口本身在覆盖层下方仍可见）。
-- [ ] **Step 3: 接回 ui_ocr**：窗口行显示标题；拖完以默认名「区域N」新增一行（edge=DISAPPEAR、frames=2、loss=95 默认仅为占位，由用户改）、norm 存进行控件用户数据；添加区域时 exe/window 未选 → 内联提示。
-- [ ] **Step 4: 手动截图验收**：manual_ui 加 `pickwindow`/`pickrect` 模式，对记事本与一个 DirectX 示例窗口各拖一次，回主界面行显示正确。
-- [ ] **Step 5: 全量绿 + Commit** `feat: target window picker and in-window region rubber-band`
+- [x] **Step 1: 实现窗口选择对话框**（IupList 弹窗，标题 + 尺寸，确定/取消；无可见窗口时内联提示）。
+- [x] **Step 2: 实现拖框覆盖层**（无边框 IupDialog+canvas，定位到目标窗口所在显示器工作区；GDI 画半透明遮罩与橡皮筋；落点用 ScreenToClient 换算客户区比例；目标窗口本身在覆盖层下方仍可见）。
+- [x] **Step 3: 接回 ui_ocr**：窗口行显示标题；拖完以默认名「区域N」新增一行（edge=DISAPPEAR、frames=2、loss=95 默认仅为占位，由用户改）、norm 存进行控件用户数据；添加区域时 exe/window 未选 → 内联提示。
+- [x] **Step 4: 手动截图验收**：manual_ui 加 `pickwindow`/`picklist`/`pickrect` 模式（zh/en 无头私桌面跑通：唯一窗直选、多窗模态、橡皮筋框选、回主界面行显示正确；计划写的记事本不可行——procmap 只枚举拥有网络端点的进程，见 ledger Ruling）。
+- [x] **Step 5: 全量绿 + Commit** `feat: target window picker and in-window region rubber-band`
 
 ### Task 10: 开始/停止接线与配置落盘
 

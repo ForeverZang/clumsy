@@ -37,4 +37,11 @@ BOOL ocrConfigSave(const char *path, const OcrConfig *cfg,
 // keyword, confirmFrames >= 1 and lossPercent in 0..100.
 BOOL ocrConfigValidate(const OcrConfig *cfg, char err[MSG_BUFSIZE]);
 
+// Same, but rules whose isDraft entry is TRUE (unfinished region rows
+// freshly dragged in the UI) are exempt from the non-empty-keyword
+// gate; frames/loss/exe gates still apply. isDraft NULL is identical
+// to ocrConfigValidate.
+BOOL ocrConfigValidateDrafts(const OcrConfig *cfg, const BOOL *isDraft,
+                             char err[MSG_BUFSIZE]);
+
 #endif // CLUMSY_OCR_CONFIG_H
