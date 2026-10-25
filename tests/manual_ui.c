@@ -453,12 +453,25 @@ static void setupOcr(BOOL expanded) {
     uiOcrSetAppContext("qa-fixture.exe");
     uiOcrPopulate(&cfg);
     if (expanded) {
-        uiOcrSetCsvPath("C:\\Users\\qa\\clumsy\\ocr_session_20261026_103000.csv");
-        uiOcrAppendLog("2026-10-26 10:30:00 session_start loss=0 source=initial_slider");
-        uiOcrAppendLog("2026-10-26 10:30:04 rule_trigger region=idle-bar edge=disappear");
-        uiOcrAppendLog("2026-10-26 10:30:04 loss_change 0->95 source=ocr");
-        uiOcrAppendLog("2026-10-26 10:30:31 rule_trigger region=reconnect edge=appear");
-        uiOcrAppendLog("2026-10-26 10:30:31 loss_change 95->50 source=ocr");
+        char line[256];
+        // Same tr() format strings as ocr_glue.c, so shots show the real
+        // bilingual log wording.
+        uiOcrSetCsvPath("C:\\Users\\qa\\AppData\\Local\\clumsy\\ocr-runs\\ocr-run-20261026-103000.csv");
+        snprintf(line, sizeof(line), tr("ocr.log.start"), 0);
+        uiOcrAppendLog(line);
+        snprintf(line, sizeof(line), tr("ocr.log.trigger"),
+                 "idle-bar", "仓库", 95);
+        uiOcrAppendLog(line);
+        snprintf(line, sizeof(line), tr("ocr.log.loss"), 95);
+        uiOcrAppendLog(line);
+        snprintf(line, sizeof(line), tr("ocr.log.unavailable"),
+                 "reconnect");
+        uiOcrAppendLog(line);
+        snprintf(line, sizeof(line), tr("ocr.log.trigger"),
+                 "reconnect", "重连", 50);
+        uiOcrAppendLog(line);
+        snprintf(line, sizeof(line), tr("ocr.log.loss"), 50);
+        uiOcrAppendLog(line);
     }
 }
 
