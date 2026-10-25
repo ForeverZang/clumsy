@@ -1,0 +1,47 @@
+# OCR 自动丢包 — 真机人工验收清单（Task 12 剩余项）
+
+日期：2026-10-26。以下项目在无人值守的非提权会话中无法自动完成（UAC 安全桌面、
+系统级 DPI 设置、资源管理器解包），需要人工在真机执行。包：
+`build/dist/clumsy-0.3-win64.zip`（或解包后的同名文件夹）。
+
+## A. 打包冒烟（对应 Task 11）
+
+1. 用**资源管理器**把 zip 解到一个全新空目录，确认「快速上手.txt」文件名不乱码，
+   文件齐全：clumsy.exe、config.txt、WinDivert.dll、WinDivert64.sys、
+   rapidocrlite.dll、models\（3 个文件）、4 份 LICENSE + OCR-VENDOR.md、
+   README-QuickStart.txt、快速上手.txt。
+2. 把 rapidocrlite.dll 临时改名后双击 clumsy.exe：应出现系统加载器报错
+   （文档已说明三者缺一不可）。恢复文件名。
+
+## B. §7 既有功能回归（OCR 不勾选）
+
+3. 双击 clumsy.exe，UAC 点「是」。不勾选第⑤块，依次：开始/停止、
+   滑块 95% 与 100%（对一个自有应用，如 chrome.exe）、定时自动恢复、
+   基础/高级 tab 往返、运行中切换 中/EN。全部行为与 0.3 一致。
+
+## C. OCR Review Focus（真机补充）
+
+4. **删模型启动**：删除（或改名）models 目录，对夹具
+   `build/tests/manual_ocr_fixture.exe` 选窗口、启用 OCR、点开始：
+   块内红字引擎错误、不挂 WinDivert、`%LOCALAPPDATA%\clumsy\ocr-runs\`
+   不新增 CSV。恢复 models。
+5. **持久化重解析**：正常开始一次后关闭程序（配置已写入 ocr_config.txt）；
+   关闭夹具窗口后启动并点开始 → 红字 0 匹配、不挂接；开两个夹具
+   （双击两次）→ 红字歧义；只留一个 → 开始成功，窗口行显示其标题。
+6. **150% DPI**：系统显示缩放设为 150%（需重新登录），在夹具窗口上拖框，
+   区域应跟随客户区比例；运行中拖动/缩放夹具窗口，日志与档位行为正常，
+   不误触发。结束后改回 100%。
+7. **最小化**：运行中最小化夹具窗口 → 日志出现限频「抓取不可用」，
+   不发生档位切换；还原后恢复观察。
+8. **200ms / 3 分钟**：识别间隔设 200，任务管理器观察 clumsy 的
+   CPU、线程数、句柄数 3 分钟不持续上涨（自动验收参考：句柄恒定、
+   CPU ≈ 0.7% 单核、线程恒定）。
+9. **稳定性**：提权运行 `build\tests\manual_leak.exe`
+   （20 次 attach/start/stop/detach），期望末行
+   `PASS: no handle leak across 20 cycles`。
+
+## D. 挂起的 UAC 汉化改动（elevate.c + 3 个 error.elevate* 文案）
+
+10. 以非管理员启动并在 UAC 点「否」→ 中文/英文警告框文案正确；
+    构造异常路径与不支持的 Windows 版本分支各验一次。
+    （该改动目前只在工作区，未提交，待本项通过后入库。）
