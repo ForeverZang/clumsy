@@ -13,12 +13,18 @@ typedef enum {
     OCR_EDGE_DISAPPEAR = 1   // fire when keyword text disappears
 } OcrEdge;
 
+// Region rectangle as client-area fractions, clamped to 0..1.
+typedef struct {
+    double x, y, w, h;
+} NormRect;
+
 typedef struct {
     char    name[32];
     char    keywords[256];   // comma separated (',' or U+FF0C), substring OR
     OcrEdge edge;
     int     confirmFrames;   // consecutive confirming polls needed; >=1
     int     lossPercent;     // gear to apply on trigger; 0..100
+    NormRect norm;           // captured region as fractions of client area
 } OcrRule;
 
 typedef enum {

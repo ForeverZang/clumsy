@@ -4,16 +4,13 @@
 #include <windows.h>
 
 #include "common.h"
+#include "ocr_rules.h" // NormRect
 
 /*
  * Screen capture support for OCR: target window enumeration by process
  * image name, normalized client-area rectangles, tiny grayscale
  * thumbnails for change detection, and PrintWindow-based BGRA frames.
  */
-
-typedef struct {
-    double x, y, w, h; // client-area fractions, clamped to 0..1
-} NormRect;
 
 typedef struct {
     HWND hwnd;

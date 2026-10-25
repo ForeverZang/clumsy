@@ -307,7 +307,7 @@ BOOL ocrWorkerStart(OcrSession *, OcrEventSink, char err[MSG_BUFSIZE]);
 void ocrWorkerStop(void);
 ```
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 用 fake capture/read 编排文本序列：
 (a) 区域先“仓库”×3（seed 基线 PRESENT），随后“”×2（confirmFrames=2）→ 第二个空帧产生一条 rule_trigger + loss 95；
@@ -317,13 +317,13 @@ void ocrWorkerStop(void);
 (d) `changeDetect=TRUE` 时相同像素帧跳过 readFn（用调用计数断言）；
 (e) fake read 耗时超过 interval 两次：pump 由测试手动驱动不等待，断言 worker 层用一个立即返回的慢 fake + nowMsFn 验证“忙时跳过”标志（通过 ocrWorker 忙标志或事件时间戳不重叠——取可断言的忙标志接口 `BOOL ocrWorkerBusy(void)` 并在同头声明）。
 
-- [ ] **Step 2: 验证失败**：BUILD FAIL `ocr_session`。
-- [ ] **Step 3: 实现 session + worker**
+- [x] **Step 2: 验证失败**：BUILD FAIL `ocr_session`。
+- [x] **Step 3: 实现 session + worker**
 
 `ocrSessionPump` 每区域：captureIsCapturable→captureFn→缩略图变化判定→readFn→ocrRuleMatches→ocrRuleStep；trigger 追加事件并写 timeline（rule_trigger + loss_change 两条）；unavailable 每区域 5 秒最多一条事件。worker 线程 Sleep 节拍，忙则 continue；队列用 CRITICAL_SECTION + 堆数组，stop 事件置位后 join、释放。
 
-- [ ] **Step 4: 验证通过**：`PASS: ocr_session`，全量绿；线程安全问题由代码评审把关。
-- [ ] **Step 5: Commit**
+- [x] **Step 4: 验证通过**：`PASS: ocr_session`，全量绿；线程安全问题由代码评审把关。
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/ocr_session.* src/ocr_worker.* tests/test_ocr_session.c scripts/run_tests.sh src/ocr_rules.h
