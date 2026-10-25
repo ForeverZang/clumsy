@@ -42,23 +42,23 @@
 **Interfaces:**
 - Produces（结论写入 SDD ledger，后续任务依赖）: C 头文件名与 init/recognize 签名、静态库/动态库文件清单与链接选项、模型文件名与总字节数、许可名称、三张样例图的单帧耗时区间、PrintWindow/WGC 在 Unity/D3D11 窗口上的成败。
 
-- [ ] **Step 1: 取得 RapidOCRLite 官方产物**
+- [x] **Step 1: 取得 RapidOCRLite 官方产物**
 
 定位官方 RapidOCRLite（ncnn 内核，提供 `c_api.h`）发布包或源码：头文件、x64 可用的预编译库（或可由 mingw/cmake 构建的源码）、ch_PP-OCRv6_small INT8 的 det/rec 模型；放入 `external/RapidOCRLite/`（`include/`、`lib/`、`models/`、`LICENSE`）。记录来源 URL 与许可证到 ledger。
 
-- [ ] **Step 2: OCR 探针**
+- [x] **Step 2: OCR 探针**
 
 `build/spike-ocr/ocr_probe.c`：纯 C，用 `c_api.h` 初始化（无 cls），依次识别三张样例图：状态栏“仓库”、中央“重连”、无文字区域。样例图放 `build/spike-ocr/samples/`（可用画图生成或被测程序截图）。msys gcc 编译链接（命令记入 ledger），打印：初始化 ms、每图 det+rec ms × 20 次的中位数与最大、20 次文本结果、模型总大小。另用 **zig cc x64** 对同一静态库做一次最小链接探测（build.zig 路径可行性）。
 
 Expected: “仓库”“重连”各 ≥18/20 次包含目标词（去空白后子串），无文字图不误报这两个词；区域图（约 300×80）中位耗时 ≤250ms；gcc 链接成功。任一不满足：在 ledger 记 Ruling 并 STOP，带回重新选栈，不继续 Task 5 之后的接线。zig cc 链接失败不 STOP：记 Ruling「build.zig 同样以 CLUMSY_OCR 宏裁掉 OCR」，Task 11 按此执行。
 
-- [ ] **Step 3: 抓帧探针**
+- [x] **Step 3: 抓帧探针**
 
 `build/spike-ocr/cap_probe.c`：对一个 HWND 试 `PrintWindow(PW_CLIENTONLY|PW_RENDERFULLCONTENT)`；窗口遮挡、移动、最小化三种状态各存 PNG；记录全黑帧（方差 0）出现条件。另做一次 WGC（`IGraphicsCaptureItemInterop`）**信息性**编译探测，只记录 mingw gcc 下缺什么，不作为门槛（v1 范围已定为 PrintWindow-only，用户 2026-10-25 拍板）。
 
 Expected: 窗口化普通 Win32/WinForms/WPF 窗口遮挡下 PrintWindow 出图非全黑；最小化失败与全黑能被调用方检测（返回失败或方差 0）。D3D11/Unity 窗口若出全黑：记入 ledger 与发布说明限制，运行时走 `capture_unavailable`，不阻塞。
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 仅当 spike 通过：`external/RapidOCRLite/` 中体积允许的二进制/模型（若模型过大，记录替代分发方式并先不提交，ledger 说明），以及一条 ledger 结论。
 

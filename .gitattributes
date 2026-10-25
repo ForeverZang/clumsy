@@ -1,0 +1,2 @@
+# RapidOCR recognizer indexes this dict by line number; keep LF byte-exact.
+external/RapidOCRLite/models/ppocrv6_dict.txt text eol=lf
