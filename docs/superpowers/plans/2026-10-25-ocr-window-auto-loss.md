@@ -354,11 +354,11 @@ BOOL ocrConfigSave(const char *path, const OcrConfig *cfg, char err[MSG_BUFSIZE]
 BOOL ocrConfigValidate(const OcrConfig *cfg, char err[MSG_BUFSIZE]); // 空关键词/越界档/帧<1/enabled 但 exe 空
 ```
 
-- [ ] **Step 1: 写失败测试**：save→load 往返两条规则（含中文关键词、norm 四位小数、DISAPPEAR、95）；损坏行跳过不致命；validate 拒绝空 exe+enabled、lossPercent 101、confirmFrames 0、空关键词。
-- [ ] **Step 2: 验证失败**：BUILD FAIL `ocr_config`。
-- [ ] **Step 3: 实现**：key=value 文本（与 config.txt 同目录 `ocr_config.txt`），解析容忍未知键。
-- [ ] **Step 4: 全量绿。**
-- [ ] **Step 5: Commit** `feat: OCR automation config persistence and validation`
+- [x] **Step 1: 写失败测试**：save→load 往返两条规则（含中文关键词、norm 四位小数、DISAPPEAR、95）；损坏行跳过不致命；validate 拒绝空 exe+enabled、lossPercent 101、confirmFrames 0、空关键词。
+- [x] **Step 2: 验证失败**：BUILD FAIL `ocr_config`。
+- [x] **Step 3: 实现**：key=value 文本（与 config.txt 同目录 `ocr_config.txt`），解析容忍未知键。
+- [x] **Step 4: 全量绿。**
+- [x] **Step 5: Commit** `feat: OCR automation config persistence and validation`
 
 ### Task 8: 自动测试 UI 块（折叠区、规则行、参数、日志）
 
