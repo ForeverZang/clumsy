@@ -103,25 +103,25 @@ BOOL ocrRuleStep(OcrRuleState *st, const OcrRule *rule,
                  OcrPoll poll, int *targetPercent);
 ```
 
-- [ ] **Step 1: 写失败测试** `tests/test_ocr_rules.c`（AAA，main 末尾打印 `OK: ocr_rules`）
+- [x] **Step 1: 写失败测试** `tests/test_ocr_rules.c`（AAA，main 末尾打印 `OK: ocr_rules`）
 
 断言：normalize `" 重 连 "`→`"重连"`、`"Reconnect!"` 小写保留符号；匹配用例 `"正在重连，请稍候"` 命中关键词 `"重连"`、`"RECONNECT"` 命中 `"reconnect"`、`"仓库2级"` 命中 `"仓库"`、空关键词不命中；状态机用例：**未武装时连续 MISSED/UNAVAILABLE 任意次都不触发（钉死首帧失败防护）**；`ocrRuleArm(st, TRUE)` 后 DISAPPEAR 规则处于 PRESENT，连续 2 次 MISSED 第二次触发一次且 `*targetPercent` 为规则值，再来 MISSED 不重复；`ocrRuleArm(st, FALSE)` 后 APPEAR 规则处于 ABSENT，连续 confirmFrames=2 次 MATCHED 第二次触发；中间插 UNAVAILABLE 不计入 run、不翻转；MIXED 打断 run 重新计数；trigger 后 stable 翻转。
 
-- [ ] **Step 2: 验证失败**
+- [x] **Step 2: 验证失败**
 
 Run: `scripts/run_tests.sh`（先在脚本登记 TU）
 Expected: BUILD FAIL `ocr_rules`（头文件不存在）
 
-- [ ] **Step 3: 实现** `src/ocr_rules.c`
+- [x] **Step 3: 实现** `src/ocr_rules.c`
 
 切词用静态缓冲（关键词切分 ≤16 个、每个归一化后 ≤128 字节）；不分配堆内存。
 
-- [ ] **Step 4: 验证通过**
+- [x] **Step 4: 验证通过**
 
 Run: `scripts/run_tests.sh`
 Expected: `PASS: ocr_rules`，其余 11 个 TU 不受影响全绿。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/ocr_rules.h src/ocr_rules.c tests/test_ocr_rules.c scripts/run_tests.sh
