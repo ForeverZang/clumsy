@@ -150,6 +150,7 @@ static Ihandle *g_val, *g_percentLabel;
 static Ihandle *g_timerToggle, *g_timerText, *g_secondsLabel, *g_countdownLabel;
 static Ihandle *g_chartFrame, *g_canvas, *g_beforeLabel, *g_nowLabel;
 static Ihandle *g_actionBtn, *g_statusLabel, *g_secondTimer, *g_recoveryTimer;
+static Ihandle *g_sectionsBox = NULL;
 static Icallback g_actionCb = NULL;
 static UiSimpleAppWatchFn g_watchApp = NULL;
 static AppGroup *g_apps = NULL;
@@ -334,6 +335,29 @@ static int sliderCb(Ihandle *ih, double value) {
     UNREFERENCED_PARAMETER(ih);
     applyPercent((int)(value * 100.0 + 0.5));
     return IUP_DEFAULT;
+}
+
+// Section ⑤ mount seam: OCR frame appended after the chart frame and
+// before the main Start button (which lives outside g_sectionsBox).
+void uiSimpleAppendSection(Ihandle *child) {
+    if (g_sectionsBox != NULL && child != NULL) {
+        IupAppend(g_sectionsBox, child);
+    }
+}
+
+// OCR-triggered gear change mirrors onto the model first (fail-safe),
+// then the slider fraction, stored percent and label.
+void uiSimpleApplyExternalLoss(int percent) {
+    char value[16];
+    if (percent < 0) percent = 0;
+    if (percent > 100) percent = 100;
+    snprintf(value, sizeof(value), "%.2f", percent / 100.0);
+    IupStoreAttribute(g_val, "VALUE", value);
+    applyPercent(percent);
+}
+
+Ihandle *uiSimpleSlider(void) {
+    return g_val;
 }
 
 static int presetCb(Ihandle *ih) {
@@ -647,6 +671,9 @@ Ihandle *uiSimpleCreate(Icallback actionCbImpl, UiSimpleAppWatchFn watchApp) {
     populateAppList(NULL);
     renderRates();
 
-    return IupVbox(appFrame, dirFrame, condFrame, g_chartFrame,
-                   g_actionBtn, g_statusLabel, NULL);
+    // Frames ①..④ live in g_sectionsBox so section ⑤ (OCR) can be
+    // appended between the chart and the main Start/Stop row.
+    g_sectionsBox = IupVbox(appFrame, dirFrame, condFrame, g_chartFrame,
+                            NULL);
+    return IupVbox(g_sectionsBox, g_actionBtn, g_statusLabel, NULL);
 }

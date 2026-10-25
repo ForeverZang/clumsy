@@ -29,7 +29,7 @@ gcc -std=gnu11 -O2 -DNDEBUG -DCLUMSY_OCR=1 -mwindows -s \
     "$IUP/libiup.a" \
     "$WD/x64/WinDivert.dll" \
     "$OCR/bin/x64/rapidocrlite.dll" \
-    -lcomctl32 -lwinmm -lws2_32 -lgdi32 -lcomdlg32 -luuid -lole32 \
+    -lcomctl32 -lwinmm -lws2_32 -lgdi32 -lcomdlg32 -lshell32 -luuid -lole32 \
     -liphlpapi \
     -o "$OUT/clumsy.exe"
 

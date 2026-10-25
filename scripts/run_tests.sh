@@ -10,11 +10,13 @@ IUP=external/iup-3.30_Win64_mingw6_lib
 FLAGS="-std=gnu11 -g -O0 -D_DEBUG -Wall -Wno-unused-parameter \
        -I$WD/include -I$IUP/include -Isrc"
 LIBS="$IUP/libiup.a $WD/x64/WinDivert.dll -lws2_32 -lwinmm -lgdi32 \
-      -lcomctl32 -lcomdlg32 -luuid -lole32 -liphlpapi"
+      -lcomctl32 -lcomdlg32 -lshell32 -luuid -lole32 -liphlpapi"
 
 mkdir -p build/tests
 
+EXTRA=""
 srcs_for() {
+    EXTRA=""
     case "$1" in
         sanity)         SRC="" ;;
         flowmap)        SRC="src/flowmap.c src/procmap.c" ;;
@@ -33,9 +35,12 @@ srcs_for() {
         ocr_session)    SRC="src/ocr_session.c src/ocr_worker.c src/ocr_rules.c \
                          src/ocr_capture.c src/ocr_timeline.c src/procmap.c" ;;
         ocr_config)     SRC="src/ocr_config.c src/ocr_rules.c" ;;
-        ui_simple)      SRC="src/ui_simple.c src/traffic.c src/i18n.c src/simple.c \
+        ui_simple)      SRC="src/ui_simple.c src/ui_ocr.c src/ocr_config.c \
+                         src/ocr_rules.c src/ocr_capture.c \
+                         src/traffic.c src/i18n.c src/simple.c \
                          src/targeting.c src/procmap.c src/swfilter.c \
-                         src/pktparse.c src/packet.c src/utils.c" ;;
+                         src/pktparse.c src/packet.c src/utils.c"
+                        EXTRA="-DCLUMSY_OCR=1" ;;
         *) echo "unknown test: $1" >&2; exit 2 ;;
     esac
 }
@@ -50,7 +55,7 @@ for name in $TESTS; do
     srcs_for "$name"
     out="build/tests/test_$name.exe"
     # shellcheck disable=SC2086
-    if ! gcc $FLAGS "tests/test_$name.c" $SRC $LIBS -o "$out" 2>build/tests/$name.build.log; then
+    if ! gcc $FLAGS $EXTRA "tests/test_$name.c" $SRC $LIBS -o "$out" 2>build/tests/$name.build.log; then
         echo "BUILD FAIL: $name (see build/tests/$name.build.log)"
         fail=1
         continue

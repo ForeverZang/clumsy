@@ -5,8 +5,10 @@
 #include <winsock2.h>
 #include <windows.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <assert.h>
+#include <math.h>
 
 #include "common.h"
 #include "targeting.h"
@@ -14,6 +16,7 @@
 #include "procmap.h"
 #include "traffic.h"
 #include "ui_simple.h"
+#include "ui_ocr.h"
 #include "iup.h"
 
 // Marker callback so pointer identity can be checked on the widget.
@@ -125,7 +128,230 @@ int main(void) {
                 assert(w2 >= 200);
             }
         }
-        IupDestroy(box);
+        // 0b. Section ⑤ OCR automation: create/defaults, app-context
+        // gate, config roundtrip via row widgets, invalid-row rejection,
+        // external loss seam. Mounts into the beginner vbox like main does.
+        {
+            Ihandle *ocr = uiOcrCreate((Icallback)fakeActionCb);
+            Ihandle *enToggle = uiOcrEnableToggleForTest();
+            Ihandle *pick = uiOcrChooseButtonForTest();
+            Ihandle *addBtn = uiOcrAddButtonForTest();
+            Ihandle *startBtn = uiOcrStartButtonForTest();
+            Ihandle *ocrBody = uiOcrBodyForTest();
+            Icallback enCb;
+            // FlatToggle FLAT_ACTION receives (Ihandle*, int state);
+            // Icallback is the one-arg generic type, so invoke through
+            // this cast.
+            typedef int (*ToggleActionFn)(Ihandle *, int);
+            OcrConfig cfg, got;
+            OcrRule *r0, *r1;
+
+            assert(ocr != NULL);
+            assert(enToggle != NULL && ocrBody != NULL);
+            // Action button in the OCR block dispatches to main's
+            // Start/Stop callback (wired on FlatButton's FLAT_ACTION).
+            assert(startBtn != NULL);
+            assert(IupGetCallback(startBtn, "FLAT_ACTION")
+                   == (Icallback)fakeActionCb);
+            // Window/region buttons are Task 9 placeholders in Task 8.
+            assert(pick != NULL && addBtn != NULL);
+            assert(IupGetAttribute(pick, "ACTIVE") == NULL
+                   || strcmp(IupGetAttribute(pick, "ACTIVE"), "NO") == 0);
+            assert(strcmp(IupGetAttribute(addBtn, "ACTIVE"), "NO") == 0);
+            // Defaults: not enabled, body folded, 500ms interval, change
+            // detection on.
+            assert(uiOcrEnabled() == FALSE);
+            assert(strcmp(IupGetAttribute(ocrBody, "VISIBLE"), "NO") == 0);
+
+            // Folding also takes the body out of natural-size flow
+            // (FLOATING=YES), like the tab pages, so the dialog fit
+            // shrinks with the section.
+            assert(strcmp(IupGetAttribute(ocrBody, "FLOATING"), "YES") == 0);
+
+            // IupFlatToggle mirrors IupFlatButton: ACTION is reserved as
+            // its internal canvas paint routine. The user click must be
+            // wired through FLAT_ACTION; hijacking ACTION both blanks the
+            // checkbox/title repaint and makes the widget fire the user
+            // callback with a garbage second arg on every internal
+            // map/paint pass.
+            enCb = IupGetCallback(enToggle, "FLAT_ACTION");
+            assert(enCb != NULL);
+            assert(IupGetCallback(enToggle, "ACTION") != enCb);
+            assert(IupGetCallback(enToggle, "ACTION") != NULL);
+
+            // Before map the section must stay disarmed even if the
+            // toggle's VALUE is ON (defense for any internal path that
+            // reaches the callback pre-map).
+            uiOcrSetAppContext(NULL);
+            IupSetAttribute(enToggle, "VALUE", "ON");
+            ((ToggleActionFn)enCb)(enToggle, 1);
+            assert(uiOcrEnabled() == FALSE);
+            assert(strcmp(IupGetAttribute(ocrBody, "VISIBLE"), "NO") == 0);
+
+            // Post-map the callback is live. "All applications" context:
+            // trying to enable is refused, toggle flips back off.
+            uiOcrSetMappedForTest(TRUE);
+            ((ToggleActionFn)enCb)(enToggle, 1);
+            assert(uiOcrEnabled() == FALSE);
+            assert(strcmp(IupGetAttribute(enToggle, "VALUE"), "OFF") == 0);
+            assert(strcmp(IupGetAttribute(ocrBody, "VISIBLE"), "NO") == 0);
+            assert(strcmp(IupGetAttribute(ocrBody, "FLOATING"), "YES") == 0);
+
+            // A concrete app: enable expands the body; collected config
+            // carries the context exe with default parameters. The
+            // callback trusts the widget VALUE, not its int argument
+            // (the historical bug was the callback being bound to
+            // ACTION, whose internal invocations passed a garbage
+            // second arg, observed 0x5CB5C640, during map).
+            uiOcrSetAppContext("qa-fixture.exe");
+            IupSetAttribute(enToggle, "VALUE", "ON");
+            ((ToggleActionFn)enCb)(enToggle, 0);
+            assert(uiOcrEnabled() == TRUE);
+            assert(strcmp(IupGetAttribute(ocrBody, "VISIBLE"), "YES") == 0);
+            assert(strcmp(IupGetAttribute(ocrBody, "FLOATING"), "NO") == 0);
+            memset(&got, 0, sizeof(got));
+            assert(uiOcrGetConfig(&got));
+            assert(got.enabled == TRUE);
+            assert(strcmp(got.exeName, "qa-fixture.exe") == 0);
+            assert(got.intervalMs == 500);
+            assert(got.changeDetect == TRUE);
+            assert(got.ruleCount == 0);
+
+            // Two rules round-trip through the row widgets (zh keywords,
+            // norm preservation, dropdown edge mapping).
+            memset(&cfg, 0, sizeof(cfg));
+            strcpy(cfg.exeName, "qa-fixture.exe");
+            strcpy(cfg.windowTitle, "QA Fixture 窗口");
+            cfg.intervalMs = 500;
+            cfg.changeDetect = TRUE;
+            cfg.ruleCount = 2;
+            r0 = &cfg.rules[0];
+            strcpy(r0->name, "idle-bar");
+            strcpy(r0->keywords, "仓库");
+            r0->edge = OCR_EDGE_DISAPPEAR;
+            r0->confirmFrames = 2;
+            r0->lossPercent = 95;
+            r0->norm.x = 0.1; r0->norm.y = 0.9;
+            r0->norm.w = 0.5; r0->norm.h = 0.08;
+            r1 = &cfg.rules[1];
+            strcpy(r1->name, "reconnect");
+            strcpy(r1->keywords, "重连,reconnect");
+            r1->edge = OCR_EDGE_APPEAR;
+            r1->confirmFrames = 1;
+            r1->lossPercent = 50;
+            assert(uiOcrPopulate(&cfg));
+            memset(&got, 0, sizeof(got));
+            assert(uiOcrGetConfig(&got));
+            assert(got.ruleCount == 2);
+            assert(strcmp(got.rules[0].name, "idle-bar") == 0);
+            assert(strcmp(got.rules[0].keywords, "仓库") == 0);
+            assert(got.rules[0].edge == OCR_EDGE_DISAPPEAR);
+            assert(got.rules[0].confirmFrames == 2);
+            assert(got.rules[0].lossPercent == 95);
+            assert(fabs(got.rules[0].norm.x - 0.1) < 1e-6);
+            assert(fabs(got.rules[0].norm.y - 0.9) < 1e-6);
+            assert(fabs(got.rules[0].norm.w - 0.5) < 1e-6);
+            assert(fabs(got.rules[0].norm.h - 0.08) < 1e-6);
+            assert(strcmp(got.rules[1].keywords, "重连,reconnect") == 0);
+            assert(got.rules[1].edge == OCR_EDGE_APPEAR);
+            assert(got.rules[1].confirmFrames == 1);
+            assert(got.rules[1].lossPercent == 50);
+            assert(strcmp(got.windowTitle, "QA Fixture 窗口") == 0);
+            assert(strcmp(got.exeName, "qa-fixture.exe") == 0);
+
+            // Invalid rows make collection fail (Start must refuse):
+            // loss out of 0..100, 0 confirm frames, empty keywords.
+            cfg.rules[0].lossPercent = 120;
+            assert(uiOcrPopulate(&cfg));
+            memset(&got, 0, sizeof(got));
+            assert(!uiOcrGetConfig(&got));
+            cfg.rules[0].lossPercent = 95;
+
+            cfg.rules[1].confirmFrames = 0;
+            assert(uiOcrPopulate(&cfg));
+            assert(!uiOcrGetConfig(&got));
+            cfg.rules[1].confirmFrames = 1;
+
+            cfg.rules[0].keywords[0] = '\0';
+            assert(uiOcrPopulate(&cfg));
+            assert(!uiOcrGetConfig(&got));
+
+            // Log mirror: the FIRST append grows the buffer from NULL;
+            // the fresh realloc block must be NUL-terminated before
+            // strcat or it scans heap garbage and corrupts the heap
+            // (observed c0000374 inside IupStoreAttribute). Poison freed
+            // blocks across the small-size buckets so a zeroed fresh
+            // page cannot hide the bug.
+            {
+                enum { SPRAY_ROUNDS = 128, SIZES = 8 };
+                void *slop[SIZES][SPRAY_ROUNDS];
+                static const size_t bucket[SIZES] =
+                    { 40, 44, 48, 56, 64, 72, 80, 96 };
+                const char *first =
+                    "session_start loss=0 source=initial_slider";
+                const char *second = "loss_change 0->95 source=ocr";
+                int b, i;
+                for (b = 0; b < SIZES; b++) {
+                    for (i = 0; i < SPRAY_ROUNDS; i++) {
+                        slop[b][i] = malloc(bucket[b]);
+                        assert(slop[b][i] != NULL);
+                        memset(slop[b][i], 'Q', bucket[b]);
+                    }
+                }
+                for (b = 0; b < SIZES; b++)
+                    for (i = 0; i < SPRAY_ROUNDS; i++)
+                        free(slop[b][i]);
+
+                uiOcrAppendLog(first);
+                assert(strcmp(IupGetAttribute(uiOcrLogForTest(), "VALUE"),
+                              first) == 0);
+                uiOcrAppendLog(second);
+                {
+                    const char *v =
+                        IupGetAttribute(uiOcrLogForTest(), "VALUE");
+                    assert(strncmp(v, first, strlen(first)) == 0);
+                    assert(strstr(v, second) != NULL);
+                }
+            }
+
+            // External loss from OCR mirrors onto slider fraction 0.07,
+            // permyriad 700 and 7% label.
+            uiSimpleApplyExternalLoss(7);
+            assert(uiSimpleLoss() == 700);
+            assert(fabs(IupGetFloat(uiSimpleSlider(), "VALUE") - 0.07f)
+                   < 1e-5f);
+
+            // Running freezes the editors; stop re-enables them.
+            uiOcrSetRunning(TRUE);
+            assert(strcmp(IupGetAttribute(enToggle, "ACTIVE"), "NO") == 0);
+            uiOcrSetRunning(FALSE);
+            assert(strcmp(IupGetAttribute(enToggle, "ACTIVE"), "YES") == 0);
+
+            // Restore the field the negative cases damaged and populate
+            // an enabled config (the startup restore path from
+            // ocr_config.txt).
+            strcpy(cfg.rules[0].keywords, "仓库");
+            cfg.enabled = TRUE;
+            assert(uiOcrPopulate(&cfg));
+
+            uiSimpleAppendSection(ocr);
+
+            // Really map the tree: IupFlatToggle's own map path drops a
+            // VALUE set before map (observed ON -> NULL, the checkbox
+            // then paints empty even though the section is expanded).
+            // The frame MAP_CB (children map first) must re-assert the
+            // populated check state.
+            {
+                const char *mappedValue;
+                Ihandle *dlg = IupDialog(box);
+                IupMap(dlg);
+                mappedValue = IupGetAttribute(enToggle, "VALUE");
+                assert(mappedValue != NULL
+                       && strcmp(mappedValue, "ON") == 0);
+                IupUnmap(dlg);
+                IupDestroy(dlg); // owns box
+            }
+        }
         IupClose();
     }
 

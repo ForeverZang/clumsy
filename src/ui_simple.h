@@ -50,6 +50,17 @@ typedef void (*UiSimpleAppWatchFn)(const char *exe);
 // button; watchApp notifies on app-list selection changes.
 Ihandle *uiSimpleCreate(Icallback actionCb, UiSimpleAppWatchFn watchApp);
 
+// Section ⑤ mount seam: append the OCR frame after frame ④ chart and
+// before the main Start/Stop row.
+void uiSimpleAppendSection(Ihandle *child);
+
+// OCR-triggered gear changes mirror onto g_percent, slider VALUE, label
+// and simpleSetLoss; 0..100 clamped.
+void uiSimpleApplyExternalLoss(int percent);
+
+// Slider widget (test seam for the mirroring check).
+Ihandle *uiSimpleSlider(void);
+
 // The main Start/Stop button (test seam for callback wiring).
 Ihandle *uiSimpleActionButton(void);
 // The running-state countdown label (test seam for layout reservation).
