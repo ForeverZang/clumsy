@@ -4,6 +4,7 @@
 #include "common.h"
 #include "ocr_config.h"
 #include "ocr_capture.h"
+#include "ui_ocr_log.h"
 
 /*
  * Section ⑤ of the beginner page: collapsible OCR automation block —
@@ -56,14 +57,15 @@ HWND uiOcrPickedHwnd(void);
 
 void uiOcrSetRunning(BOOL running);
 
-// Read-only scrolling mirror of the CSV timeline (capped, CSV is
-// authoritative) plus its path label and the open-folder button.
-void uiOcrAppendLog(const char *line);
-void uiOcrSetCsvPath(const char *path);
-
 // Show a translated inline error (pass an ocr.error.* key, or literal
 // English which tr() passes through). "" clears it.
 void uiOcrShowError(const char *keyOrText);
+
+#if defined(CLUMSY_OCR)
+// Full copy of the window hand-picked this session (Start prefers this
+// over re-resolving the saved title).
+BOOL uiOcrPickedWindow(CaptureWindow *out);
+#endif
 
 // Test seam: flip the post-map gate (real UI flips it from MAP_CB).
 void uiOcrSetMappedForTest(BOOL mapped);
@@ -82,6 +84,5 @@ Ihandle *uiOcrChooseButtonForTest(void);
 Ihandle *uiOcrAddButtonForTest(void);
 Ihandle *uiOcrStartButtonForTest(void);
 Ihandle *uiOcrBodyForTest(void);
-Ihandle *uiOcrLogForTest(void);
 
 #endif // CLUMSY_UI_OCR_H

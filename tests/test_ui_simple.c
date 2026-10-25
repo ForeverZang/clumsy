@@ -18,6 +18,7 @@
 #include "ui_simple.h"
 #include "ui_ocr.h"
 #include "ui_picker.h"
+#include "ocr_app.h"
 #include "iup.h"
 
 // Marker callback so pointer identity can be checked on the widget.
@@ -53,6 +54,25 @@ static BOOL fakeName(UINT32 pid, char *out, size_t cap) {
     strncpy(out, "a.exe", cap - 1);
     out[cap - 1] = '\0';
     return TRUE;
+}
+
+// Headless OCR app coordinator fakes (section 0c).
+static int g_appLossCalls;
+static int g_appLastLoss;
+static int g_appFactoryCalls;
+static void appCountingLoss(int percent, void *user) {
+    (void)user;
+    g_appLossCalls++;
+    g_appLastLoss = percent;
+}
+static OcrEngine *appFailingFactory(const char *dir,
+                                    char err[MSG_BUFSIZE]) {
+    (void)dir;
+    g_appFactoryCalls++;
+    if (err) {
+        strncpy(err, "fake: model files unavailable", MSG_BUFSIZE - 1);
+    }
+    return NULL;
 }
 
 static void liveRates(UINT64 *down, UINT64 *up) {
@@ -517,6 +537,75 @@ int main(void) {
             }
         }
         IupClose();
+    }
+
+    // 0c. Headless OCR app coordinator: strict validation and the
+    // engine-failure preflight path. No IUP is involved below.
+    {
+        OcrConfig ac;
+        char aerr[MSG_BUFSIZE];
+        OcrAppHooks hooks;
+        memset(&hooks, 0, sizeof(hooks));
+        hooks.onLoss = appCountingLoss;
+
+        // A strict-valid config needs keywords on every rule; a draft
+        // (empty keywords) must be refused at the app layer too, even
+        // though the widget draft gate tolerates it.
+        memset(&ac, 0, sizeof(ac));
+        strcpy(ac.exeName, "fixture.exe");
+        strcpy(ac.windowTitle, "Fixture");
+        ac.intervalMs = 500;
+        ac.changeDetect = TRUE;
+        ac.enabled = TRUE;
+        ac.ruleCount = 1;
+        strcpy(ac.rules[0].name, "status");
+        // keywords intentionally left empty
+        ac.rules[0].edge = OCR_EDGE_DISAPPEAR;
+        ac.rules[0].confirmFrames = 2;
+        ac.rules[0].lossPercent = 95;
+        ac.rules[0].norm.x = 0.0;
+        ac.rules[0].norm.y = 0.9;
+        ac.rules[0].norm.w = 0.5;
+        ac.rules[0].norm.h = 0.08;
+
+        g_appLossCalls = 0;
+        g_appFactoryCalls = 0;
+        ocrAppSetEngineFactoryForTest(appFailingFactory);
+        assert(!ocrAppStart(&ac, NULL, "build/tests/app-badcfg",
+                            "build/tests/no-models", 0, &hooks, aerr));
+        assert(g_appLossCalls == 0);
+        assert(g_appFactoryCalls == 0); // refused before engine creation
+
+        // Valid config + a live picked window, but engine creation
+        // fails: start fails closed, the loss applier never fires and
+        // the header-only timeline of a run that never started is
+        // removed rather than left behind.
+        strcpy(ac.rules[0].keywords, "仓库");
+        HWND fw = CreateWindowExW(WS_EX_APPWINDOW, L"Static",
+            L"app engine fail fixture",
+            WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+            200, 200, 400, 300, NULL, NULL,
+            GetModuleHandleW(NULL), NULL);
+        assert(fw != NULL);
+        CaptureWindow picked;
+        memset(&picked, 0, sizeof(picked));
+        picked.hwnd = fw;
+
+        g_appLossCalls = 0;
+        g_appFactoryCalls = 0;
+        assert(!ocrAppStart(&ac, &picked, "build/tests/app-enginefail",
+                            "build/tests/no-models", 0, &hooks, aerr));
+        assert(g_appLossCalls == 0);
+        assert(g_appFactoryCalls == 1);
+        assert(!ocrAppRunning());
+        {
+            const char *left = ocrAppCsvPath();
+            assert(left != NULL);
+            assert(GetFileAttributesA(left)
+                   == INVALID_FILE_ATTRIBUTES);
+        }
+        ocrAppSetEngineFactoryForTest(NULL); // restore real factory
+        DestroyWindow(fw);
     }
 
     // 1. Slider percent -> permyriad, clamped.

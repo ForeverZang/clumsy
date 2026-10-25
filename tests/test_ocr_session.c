@@ -12,6 +12,7 @@
 
 #include "ocr_session.h"
 #include "ocr_worker.h"
+#include "ocr_timeline.h"
 
 // --- fakes ---------------------------------------------------------------
 
@@ -329,6 +330,81 @@ static void test_change_detection_gate(void) {
     assert(g_reg[0].reads == 2);
 }
 
+// --- (h) spec §5/§6.4: when change detection skips OCR, the region replays
+//     its last text into the state machine — steady frames still count as
+//     confirming polls, so a disappear held by a static blank frame fires.
+
+static void test_change_gate_reuses_last_text_disappear(void) {
+    OcrSession s;
+    setupSession(&s, TRUE); // change detection ON, MAD threshold 5
+    s.regionCount = 1;
+    setRegion(&s, 0, makeRule(OCR_EDGE_DISAPPEAR, "仓库", 2, 95), 0.0, 0.5);
+
+    static const struct Frame frames[] = {
+        {"仓库", 10, TRUE}, // seed: armed PRESENT
+        {"仓库", 10, TRUE}, // pump 1: identical -> reuse "仓库", steady
+        {"", 20, TRUE},     // pump 2: changed -> OCR miss, run = 1
+        {"", 20, TRUE},     // pump 3: identical blank -> reuse "", run = 2
+    };
+    g_reg[0].frames = frames;
+    g_reg[0].n = 4;
+
+    char err[MSG_BUFSIZE];
+    assert(ocrSessionSeed(&s, err));
+    assert(g_reg[0].reads == 1);
+
+    OcrSessionEvent ev[8];
+    g_fakeNow += 1000;
+    assert(pumpOnce(&s, ev, 8) == 0);
+    assert(g_reg[0].reads == 1); // unchanged frame did not run OCR
+
+    g_fakeNow += 1000;
+    assert(pumpOnce(&s, ev, 8) == 0);
+    assert(g_reg[0].reads == 2); // changed frame ran OCR, run = 1 only
+
+    g_fakeNow += 1000;
+    int n = pumpOnce(&s, ev, 8);
+    assert(n == 2); // reused miss confirms and fires
+    assert(g_reg[0].reads == 2); // no extra OCR for the reused poll
+    assert(strcmp(ev[0].event, "rule_trigger") == 0);
+    assert(ev[0].lossPercent == 95);
+    assert(strcmp(ev[1].event, "loss_change") == 0);
+    assert(ev[1].lossPercent == 95);
+}
+
+// --- (i) the reused text is the one the trigger row carries: an appear ---
+//     confirmed by a steady (OCR-skipped) frame still reports the text.    --
+
+static void test_change_gate_reuses_last_text_appear(void) {
+    OcrSession s;
+    setupSession(&s, TRUE);
+    s.regionCount = 1;
+    setRegion(&s, 0, makeRule(OCR_EDGE_APPEAR, "重连", 2, 50), 0.0, 0.5);
+
+    static const struct Frame frames[] = {
+        {"", 10, TRUE},     // seed: armed ABSENT
+        {"重连", 20, TRUE}, // pump 1: changed -> match, run = 1
+        {"重连", 20, TRUE}, // pump 2: identical -> reuse, run = 2 -> fires
+    };
+    g_reg[0].frames = frames;
+    g_reg[0].n = 3;
+
+    char err[MSG_BUFSIZE];
+    assert(ocrSessionSeed(&s, err));
+
+    OcrSessionEvent ev[8];
+    g_fakeNow += 1000;
+    assert(pumpOnce(&s, ev, 8) == 0);
+    assert(g_reg[0].reads == 2);
+    g_fakeNow += 1000;
+    int n = pumpOnce(&s, ev, 8);
+    assert(n == 2);
+    assert(g_reg[0].reads == 2); // confirming frame skipped OCR
+    assert(strcmp(ev[0].event, "rule_trigger") == 0);
+    assert(ev[0].lossPercent == 50);
+    assert(ev[0].text && strcmp(ev[0].text, "重连") == 0);
+}
+
 // --- worker: events go through the queue to a main-thread drain ----------
 
 static OcrSessionEvent g_collected[32];
@@ -422,6 +498,60 @@ static void test_worker_busy_skips_beats(void) {
     g_blockCapture = FALSE;
 }
 
+// --- (g) spec §5: trigger rows written to the CSV carry source ---------
+//         "rule:<region name>" (unnamed -> rule:rN), not a generic tag. --
+
+static void test_timeline_rule_source(void) {
+    OcrSession s;
+    setupSession(&s, FALSE);
+    s.regionCount = 1;
+    setRegion(&s, 0, makeRule(OCR_EDGE_DISAPPEAR, "仓库", 2, 95), 0.0, 0.5);
+
+    static const struct Frame frames[] = {
+        {"仓库", 10, TRUE}, {"仓库", 10, TRUE}, {"仓库", 10, TRUE},
+        {"", 20, TRUE}, {"", 20, TRUE},
+    };
+    g_reg[0].frames = frames;
+    g_reg[0].n = 5;
+
+    char path[1024], err[MSG_BUFSIZE];
+    char *csv = NULL;
+    long len = 0;
+    FILE *f;
+    s.timeline = ocrTimelineOpen("build/tests/tl-source", path,
+                                 sizeof(path), err);
+    assert(s.timeline != NULL);
+
+    assert(ocrSessionSeed(&s, err));
+    OcrSessionEvent ev[16];
+    int total = 0;
+    for (int i = 0; i < 4; i++) {
+        g_fakeNow += 1000;
+        total += pumpOnce(&s, ev + total, (int)(16 - total));
+    }
+    assert(total == 2);
+    ocrTimelineClose(s.timeline);
+
+    f = fopen(path, "rb");
+    assert(f != NULL);
+    assert(fseek(f, 0, SEEK_END) == 0);
+    len = ftell(f);
+    assert(len > 0 && len < 1 << 20);
+    rewind(f);
+    csv = malloc((size_t)len + 1);
+    assert(csv != NULL);
+    assert(fread(csv, 1, (size_t)len, f) == (size_t)len);
+    csv[len] = '\0';
+    fclose(f);
+
+    // rule_trigger and loss_change rows both tag the rule by name; the
+    // unnamed test rule falls back to r0, and the edge column is set.
+    // Columns: event,region=r0,ocr_text="",keyword="",edge,loss,source,note
+    assert(strstr(csv, "rule_trigger,r0,,,disappear,95,rule:r0,") != NULL);
+    assert(strstr(csv, "loss_change,r0,,,disappear,95,rule:r0,") != NULL);
+    free(csv);
+}
+
 int main(void) {
     test_disappear_trigger();      // (a)
     test_two_region_order();       // (b)
@@ -430,6 +560,9 @@ int main(void) {
     test_unarmed_seed_fail_closed(); // (f)
     test_worker_queue();
     test_worker_busy_skips_beats(); // (e)
+    test_change_gate_reuses_last_text_disappear(); // (h)
+    test_change_gate_reuses_last_text_appear();    // (i)
+    test_timeline_rule_source();    // (g)
 
     printf("OK: ocr_session\n");
     return 0;

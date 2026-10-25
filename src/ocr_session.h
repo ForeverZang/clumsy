@@ -30,6 +30,8 @@ typedef struct {
     int           thumbW;
     int           thumbH;
     BOOL          hasThumb;
+    char          lastText[OCR_EVENT_TEXT]; // reused when the change gate
+    BOOL          hasLastText;              // skips OCR (spec §5/§6.4)
     UINT64        lastUnavailableMs; // rate limit for unavailable events
 } OcrRegion;
 

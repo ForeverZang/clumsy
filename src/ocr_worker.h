@@ -19,7 +19,9 @@ typedef void (*OcrEventSink)(const OcrSessionEvent *ev);
 BOOL ocrWorkerStart(OcrSession *session, OcrEventSink sink,
                     char err[MSG_BUFSIZE]);
 
-// Signal the worker, join its thread, and drop any queued events.
+// Signal the worker and join its thread. Queued events are preserved so
+// the GUI thread can drain the final gear changes after this returns;
+// the next Start clears anything left behind.
 void ocrWorkerStop(void);
 
 // TRUE while the worker thread is inside a pump.

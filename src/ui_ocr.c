@@ -1,6 +1,5 @@
 #include <winsock2.h>
 #include <windows.h>
-#include <shellapi.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -16,7 +15,6 @@
 #define OCR_DEFAULT_INTERVAL_MS 500
 #define OCR_MIN_INTERVAL_MS 200
 #define OCR_MAX_INTERVAL_MS 60000
-#define OCR_LOG_MAX_LINES 500
 
 // Fixed column widths keep the rule rows from stretching the dialog
 // past the folded width (plan Task 8 visual acceptance). The header row
@@ -55,15 +53,14 @@ static BOOL g_uiMapped = FALSE;
 static Ihandle *g_frame, *g_enableToggle, *g_body;
 static Ihandle *g_windowLabel, *g_chooseBtn, *g_addBtn;
 static Ihandle *g_ruleBox, *g_interval, *g_changeToggle;
-static Ihandle *g_log, *g_startBtn, *g_errorLabel, *g_csvLabel;
+static Ihandle *g_startBtn, *g_errorLabel;
 
 static OcrRow g_rows[OCR_CONFIG_RULES_MAX];
 static size_t g_rowCount = 0;
 
 static char g_appExe[128] = "";
 static char g_windowTitle[256] = "";
-static char g_csvPath[512] = "";
-static char *g_logText = NULL;
+static CaptureWindow g_pickedWindow;
 
 static int frameMapCb(Ihandle *frame);
 
@@ -137,50 +134,6 @@ static void refreshPickerButtons(void) {
                     (!g_running && g_appExe[0] != '\0') ? "YES" : "NO");
     IupSetAttribute(g_addBtn, "ACTIVE",
                     (!g_running && g_hasPicked) ? "YES" : "NO");
-}
-
-// ---------------------------------------------------------------------------
-// scrolling log mirror (CSV stays authoritative)
-// ---------------------------------------------------------------------------
-
-static size_t countLines(const char *s) {
-    size_t n = 0;
-    if (s == NULL) return 0;
-    for (; *s != '\0'; s++) {
-        if (*s == '\n') n++;
-    }
-    return n;
-}
-
-static void rebuildLog(void) {
-    IupStoreAttribute(g_log, "VALUE", g_logText != NULL ? g_logText : "");
-    // Keep the newest line visible: TOPLINE clamps to the last line when
-    // the value is past the end (native multiline behavior).
-    IupSetInt(g_log, "TOPLINE", (int)countLines(g_logText) + 1);
-}
-
-void uiOcrAppendLog(const char *line) {
-    char *grown;
-    size_t oldLen = g_logText != NULL ? strlen(g_logText) : 0;
-    if (line == NULL || g_log == NULL) return;
-
-    grown = realloc(g_logText, oldLen + strlen(line) + 2);
-    if (grown == NULL) return;
-    g_logText = grown;
-    // realloc(NULL,...) (the first append) leaves the bytes
-    // uninitialized: terminate at oldLen before any strcat, or the
-    // newline/line land after heap garbage and corrupt the heap.
-    g_logText[oldLen] = '\0';
-    if (oldLen > 0) strcat(g_logText, "\n");
-    strcat(g_logText, line);
-
-    // Keep a bounded tail: drop whole leading lines past the cap.
-    while (countLines(g_logText) >= OCR_LOG_MAX_LINES) {
-        char *nl = strchr(g_logText, '\n');
-        if (nl == NULL) break;
-        memmove(g_logText, nl + 1, strlen(nl + 1) + 1);
-    }
-    rebuildLog();
 }
 
 // ---------------------------------------------------------------------------
@@ -325,15 +278,6 @@ static int enableCb(Ihandle *ih, int state) {
     return IUP_DEFAULT;
 }
 
-static int openDirCb(Ihandle *ih) {
-    char args[600];
-    UNREFERENCED_PARAMETER(ih);
-    if (g_csvPath[0] == '\0') return IUP_DEFAULT;
-    snprintf(args, sizeof(args), "/select,\"%s\"", g_csvPath);
-    ShellExecuteA(NULL, "open", "explorer.exe", args, NULL, SW_SHOWNORMAL);
-    return IUP_DEFAULT;
-}
-
 // Enumerate the selected app's visible top-level windows: zero ->
 // inline error (the user fixes the app choice); one -> picked directly;
 // several -> modal IupList chooser. Shared by the button and the
@@ -474,6 +418,7 @@ BOOL uiOcrPopulate(const OcrConfig *cfg) {
     // and dragged-region numbering starts over ("Region 1").
     g_hasPicked = FALSE;
     g_pickedHwnd = NULL;
+    memset(&g_pickedWindow, 0, sizeof(g_pickedWindow));
     g_regionSeq = 0;
     refreshPickerButtons();
 
@@ -520,10 +465,12 @@ void uiOcrSetPickedWindow(const CaptureWindow *win) {
     if (win == NULL) {
         g_hasPicked = FALSE;
         g_pickedHwnd = NULL;
+        memset(&g_pickedWindow, 0, sizeof(g_pickedWindow));
         g_windowTitle[0] = '\0';
     } else {
         g_hasPicked = TRUE;
         g_pickedHwnd = win->hwnd;
+        g_pickedWindow = *win;
         copyField(g_windowTitle, sizeof(g_windowTitle), win->title);
     }
     refreshWindowLabel();
@@ -542,6 +489,14 @@ HWND uiOcrPickedHwnd(void) {
     return g_pickedHwnd;
 }
 
+// Full copy of the session-picked window (Start resolves targets through
+// this without re-enumerating); zero-filled on clear.
+BOOL uiOcrPickedWindow(CaptureWindow *out) {
+    if (out == NULL || !g_hasPicked) return FALSE;
+    *out = g_pickedWindow;
+    return TRUE;
+}
+
 void uiOcrSetRunning(BOOL running) {
     g_running = running;
     IupSetAttribute(g_enableToggle, "ACTIVE", running ? "NO" : "YES");
@@ -553,11 +508,6 @@ void uiOcrSetRunning(BOOL running) {
     refreshPickerButtons();
     IupStoreAttribute(g_startBtn, "TITLE",
                       running ? tr("action.stop") : tr("action.start"));
-}
-
-void uiOcrSetCsvPath(const char *path) {
-    copyField(g_csvPath, sizeof(g_csvPath), path);
-    IupStoreAttribute(g_csvLabel, "TITLE", path != NULL ? path : "");
 }
 
 void uiOcrShowError(const char *keyOrText) {
@@ -664,8 +614,8 @@ static int frameMapCb(Ihandle *frame) {
 }
 
 Ihandle *uiOcrCreate(Icallback actionCbImpl) {
-    Ihandle *windowRow, *addRow, *headerRow, *paramsRow, *csvRow;
-    Ihandle *csvLbl, *openDirBtn, *startRow;
+    Ihandle *windowRow, *addRow, *headerRow, *paramsRow, *logArea;
+    Ihandle *startRow;
 
     g_actionCb = actionCbImpl;
 
@@ -690,22 +640,7 @@ Ihandle *uiOcrCreate(Icallback actionCbImpl) {
     headerRow = buildRuleHeader();
     paramsRow = buildParamsRow();
 
-    g_log = IupMultiLine(NULL);
-    IupSetAttribute(g_log, "READONLY", "YES");
-    IupSetAttribute(g_log, "EXPAND", "HORIZONTAL");
-    IupSetAttribute(g_log, "RASTERSIZE", "0x112");
-    IupSetAttribute(g_log, "SCROLLBAR", "VERTICAL");
-
-    csvLbl = IupLabel(tr("ocr.csvPath"));
-    i18nBind(csvLbl, "TITLE", "ocr.csvPath");
-    g_csvLabel = IupFlatLabel("");
-    IupSetAttribute(g_csvLabel, "FGCOLOR", "110 110 110");
-    IupSetAttribute(g_csvLabel, "EXPAND", "HORIZONTAL");
-    IupSetAttribute(g_csvLabel, "WRAP", "YES");
-    openDirBtn = IupFlatButton(tr("ocr.openDir"));
-    i18nBind(openDirBtn, "TITLE", "ocr.openDir");
-    IupSetCallback(openDirBtn, "FLAT_ACTION", (Icallback)openDirCb);
-    csvRow = IupHbox(csvLbl, g_csvLabel, openDirBtn, NULL);
+    logArea = uiOcrLogBuild();
 
     g_errorLabel = IupFlatLabel("");
     IupSetAttribute(g_errorLabel, "FGCOLOR", "208 70 72");
@@ -731,7 +666,7 @@ Ihandle *uiOcrCreate(Icallback actionCbImpl) {
 
     g_body = IupVbox(windowRow, addRow, headerRow, buildKwHint(),
                      g_ruleBox, paramsRow,
-                     g_log, csvRow, g_errorLabel, startRow, NULL);
+                     logArea, g_errorLabel, startRow, NULL);
     IupSetAttribute(g_body, "VISIBLE", "NO");
     IupSetAttribute(g_body, "FLOATING", "YES");
     IupSetAttribute(g_body, "GAP", "6");
@@ -767,7 +702,6 @@ Ihandle *uiOcrChooseButtonForTest(void) { return g_chooseBtn; }
 Ihandle *uiOcrAddButtonForTest(void) { return g_addBtn; }
 Ihandle *uiOcrStartButtonForTest(void) { return g_startBtn; }
 Ihandle *uiOcrBodyForTest(void) { return g_body; }
-Ihandle *uiOcrLogForTest(void) { return g_log; }
 
 #else // !CLUMSY_OCR — no-op stubs for builds without OCR
 
@@ -793,15 +727,12 @@ const char *uiOcrSavedWindowTitle(void) { return ""; }
 BOOL uiOcrHasPickedWindow(void) { return FALSE; }
 HWND uiOcrPickedHwnd(void) { return NULL; }
 void uiOcrSetRunning(BOOL running) { (void)running; }
-void uiOcrAppendLog(const char *line) { (void)line; }
-void uiOcrSetCsvPath(const char *path) { (void)path; }
 void uiOcrShowError(const char *keyOrText) { (void)keyOrText; }
 Ihandle *uiOcrEnableToggleForTest(void) { return NULL; }
 Ihandle *uiOcrChooseButtonForTest(void) { return NULL; }
 Ihandle *uiOcrAddButtonForTest(void) { return NULL; }
 Ihandle *uiOcrStartButtonForTest(void) { return NULL; }
 Ihandle *uiOcrBodyForTest(void) { return NULL; }
-Ihandle *uiOcrLogForTest(void) { return NULL; }
 void uiOcrSetMappedForTest(BOOL mapped) { (void)mapped; }
 BOOL uiOcrAddRegionForTest(const NormRect *norm) {
     (void)norm;

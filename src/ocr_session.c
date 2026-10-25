@@ -68,6 +68,12 @@ static void writeTimeline(OcrSession *s, const char *event, int region,
     if (rule->name[0]) snprintf(label, sizeof(label), "%s", rule->name);
     else snprintf(label, sizeof(label), "r%d", region);
 
+    // spec §5: rule rows are attributable to the region that fired them;
+    // unnamed regions fall back to rN. Label lives in source, note stays
+    // free for operator annotations.
+    char source[40];
+    snprintf(source, sizeof(source), "rule:%s", label);
+
     OcrTimelineEvent t;
     memset(&t, 0, sizeof(t));
     t.timeMs = sessionNow(s);
@@ -77,8 +83,8 @@ static void writeTimeline(OcrSession *s, const char *event, int region,
     t.keyword = NULL;
     t.edge = rule->edge == OCR_EDGE_APPEAR ? "appear" : "disappear";
     t.lossPercent = lossPercent;
-    t.source = "ocr";
-    t.note = rule->name[0] ? rule->name : NULL;
+    t.source = source;
+    t.note = NULL;
     (void)ocrTimelineEvent(s->timeline, &t);
 }
 
@@ -179,6 +185,9 @@ BOOL ocrSessionSeed(OcrSession *s, char err[MSG_BUFSIZE]) {
             rgn->hasThumb = TRUE;
             BOOL present = ocrRuleMatches(&rgn->rule, text);
             ocrRuleArm(&rgn->state, present);
+            strncpy(rgn->lastText, text, OCR_EVENT_TEXT - 1);
+            rgn->lastText[OCR_EVENT_TEXT - 1] = '\0';
+            rgn->hasLastText = TRUE;
             armed++;
         }
         captureFreeBitmap(bgra);
@@ -207,9 +216,23 @@ BOOL ocrSessionPump(OcrSession *s, OcrSessionEvent *ev, int *evCount,
             emitUnavailable(s, (int)i, rgn, ev, evCount, evCap);
             continue;
         }
-        if (got == REGION_UNCHANGED) continue;
 
-        OcrPoll poll = ocrRuleMatches(&rgn->rule, text)
+        // spec §5/§6.4: below the change threshold OCR is skipped and the
+        // previous text is reused AS this period's observation, so steady
+        // frames still advance confirm runs. No cached text yet (seed read
+        // failed and no pump has succeeded) -> wait for a real frame.
+        const char *observed;
+        if (got == REGION_UNCHANGED) {
+            if (!rgn->hasLastText) continue;
+            observed = rgn->lastText;
+        } else {
+            strncpy(rgn->lastText, text, OCR_EVENT_TEXT - 1);
+            rgn->lastText[OCR_EVENT_TEXT - 1] = '\0';
+            rgn->hasLastText = TRUE;
+            observed = rgn->lastText;
+        }
+
+        OcrPoll poll = ocrRuleMatches(&rgn->rule, observed)
                        ? OCR_POLL_MATCHED : OCR_POLL_MISSED;
 
         // Seed failed for this region: the first successful read arms it
@@ -218,7 +241,7 @@ BOOL ocrSessionPump(OcrSession *s, OcrSessionEvent *ev, int *evCount,
 
         int target = -1;
         if (ocrRuleStep(&rgn->state, &rgn->rule, poll, &target)) {
-            emitTrigger(s, (int)i, rgn, text, target, ev, evCount, evCap);
+            emitTrigger(s, (int)i, rgn, observed, target, ev, evCount, evCap);
         }
     }
     return TRUE;

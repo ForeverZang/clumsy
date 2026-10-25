@@ -12,6 +12,10 @@
 #include "swfilter.h"
 #include "ui_simple.h"
 #include "ui_advanced.h"
+#if defined(CLUMSY_OCR)
+#include "ui_ocr.h"
+#include "ocr_glue.h"
+#endif
 
 // ! the order decides which module get processed first
 Module* modules[MODULE_CNT] = {
@@ -55,6 +59,11 @@ static void showAdvancedTab(void);
 // tears the persistent session down; global mode attaches at Start.
 static void watchApp(const char *exe) {
     char err[MSG_BUFSIZE];
+#if defined(CLUMSY_OCR)
+    // App-list changes only set the context for window enumeration; the
+    // configured rules are never cleared by switching the dropdown.
+    uiOcrSetAppContext(exe);
+#endif
     if (exe != NULL) {
         if (!divertIsAttached() && !divertAttach("true", err)) {
             uiSimpleSetStatus(err);
@@ -102,6 +111,14 @@ static int uiStartCb(Ihandle *ih) {
     if (!compileAdvancedFilter()) {
         return IUP_DEFAULT;
     }
+#if defined(CLUMSY_OCR)
+    // OCR preflight before any WinDivert attach: a failed start shows an
+    // inline red error and leaves the system exactly as it was.
+    if (!uiOcrGlueStart(uiSimpleLoss() / 100)) {
+        swfilterClear();
+        return IUP_DEFAULT;
+    }
+#endif
     exe = uiSimpleSelectedApp();
     if (!divertIsAttached() && !divertAttach("true", err)) {
         swfilterClear();
@@ -132,6 +149,11 @@ static int uiStartCb(Ihandle *ih) {
 
 static int uiStopCb(Ihandle *ih) {
     UNREFERENCED_PARAMETER(ih);
+#if defined(CLUMSY_OCR)
+    // Stop the observer and deliver its final queued gear change before
+    // the affect session tears down.
+    uiOcrGlueStop();
+#endif
     divertSetReinjectObserver(NULL);
     divertStopAffect();
     swfilterClear();
@@ -383,6 +405,18 @@ void init(int argc, char* argv[]) {
     simpleBox = uiSimpleCreate((Icallback)uiToggleActionCb, watchApp);
     advancedBox = uiAdvancedCreate();
 
+#if defined(CLUMSY_OCR)
+    {
+        // Section ⑤ mounts between the live chart and the Start row;
+        // its own Start/Stop button drives the same uiToggleActionCb.
+        Ihandle *ocrSection =
+            uiOcrCreate((Icallback)uiToggleActionCb);
+        uiSimpleAppendSection(ocrSection);
+        uiOcrGlueInit();
+        uiOcrGlueLoadSavedConfig(); // missing file: silent defaults
+    }
+#endif
+
     // Custom tab headers directly under the language row: basic is default.
     basicTabBtn = IupFlatButton(NULL);
     advTabBtn = IupFlatButton(NULL);
@@ -456,6 +490,9 @@ void startup(void) {
 }
 
 void cleanup(void) {
+#if defined(CLUMSY_OCR)
+    uiOcrGlueCleanup();
+#endif
     divertStopAffect();
     divertDetach();
     IupDestroy(iconTimer);
@@ -546,6 +583,9 @@ static int languageCb(Ihandle *ih) {
     i18nSetLang(lang);
     i18nRetranslate();
     uiSimpleRetranslate();
+#if defined(CLUMSY_OCR)
+    uiOcrRetranslate();
+#endif
     snprintf(dialogTitle, sizeof(dialogTitle), "%s v%s",
              tr("app.title"), CLUMSY_VERSION);
     IupSetAttribute(dialog, "TITLE", dialogTitle);
