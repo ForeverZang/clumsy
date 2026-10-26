@@ -19,8 +19,9 @@
 #define OCR_APP_CSV_CAP       1200
 
 static struct {
-    OcrSession     session;
-    OcrRegion      regions[OCR_MAX_REGIONS];
+    OcrSession        session;
+    OcrSessionRegion  regions[OCR_MAX_REGIONS];
+    OcrSessionGroup   groups[OCR_MAX_GROUPS];
     OcrEngine     *engine;
     OcrTimeline   *timeline;
     char           csvPath[OCR_APP_CSV_CAP];
@@ -91,15 +92,27 @@ static void buildSession(const OcrConfig *cfg,
                          const CaptureWindow *target) {
     memset(&g_app.session, 0, sizeof(g_app.session));
     memset(g_app.regions, 0, sizeof(g_app.regions));
+    memset(g_app.groups, 0, sizeof(g_app.groups));
     g_app.session.intervalMs = cfg->intervalMs;
     g_app.session.changeDetect = cfg->changeDetect;
     g_app.session.madThreshold = OCR_APP_MAD_THRESHOLD;
     g_app.session.target = *target;
     g_app.session.timeline = g_app.timeline;
-    g_app.session.regionCount = cfg->ruleCount;
+    g_app.session.regionCount = cfg->regionCount;
     g_app.session.regions = g_app.regions;
-    for (size_t i = 0; i < cfg->ruleCount; i++) {
-        g_app.regions[i].rule = cfg->rules[i];
+    g_app.session.groupCount = cfg->groupCount;
+    g_app.session.groups = g_app.groups;
+    for (size_t i = 0; i < cfg->regionCount; i++) {
+        g_app.regions[i].norm = cfg->regions[i].norm;
+    }
+    for (size_t gi = 0; gi < cfg->groupCount; gi++) {
+        g_app.groups[gi].group = cfg->groups[gi];
+        for (size_t k = 0; k < cfg->groups[gi].memberCount; k++) {
+            int ri = cfg->groups[gi].members[k].regionIndex;
+            if (ri >= 0 && (size_t)ri < cfg->regionCount) {
+                g_app.session.referenced[ri] = TRUE;
+            }
+        }
     }
     g_app.session.captureFn = captureClientRegion;
     g_app.session.readFn = ocrEngineRead;

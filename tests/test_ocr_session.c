@@ -1,8 +1,9 @@
-// Unit tests for OCR session orchestration: seeded arming, late arming
-// after unavailable startup, the confirm-N edge path through capture/read
-// fakes, change-detection read skipping, unavailable rate limiting, event
-// ordering by region index, and the single worker thread's queue, busy
-// flag and missed-beat skipping.
+// Unit tests for OCR session orchestration under the region/group model:
+// seeded per-group arming, AND-group poll synthesis, late arming after
+// unavailable startup, confirm-N edge paths through capture/read fakes,
+// union-only capture of referenced regions, change-detection read
+// skipping, per-group unavailable rate limiting, same-tick trigger gear
+// arbitration, CSV identity/escaping, and the worker queue/busy behavior.
 #include <winsock2.h>
 #include <windows.h>
 #include <stdio.h>
@@ -30,7 +31,8 @@ struct RegFake {
     int reads;
 };
 
-static struct RegFake g_reg[2];
+#define PHYS_COUNT 3
+static struct RegFake g_reg[PHYS_COUNT];
 static UINT64 g_fakeNow = 0;
 static UINT64 fakeNow(void) { return g_fakeNow; }
 
@@ -51,8 +53,10 @@ static BOOL fakeCapture(HWND hwnd, const RECT *rc, unsigned char **outBgra,
                         int *outW, int *outH, char err[MSG_BUFSIZE]) {
     (void)hwnd; (void)err;
     // Session maps each region's norm onto a 1000x1000 fallback client
-    // (real GetClientRect only fails on the fake sentinel HWNDs).
-    int ri = (rc->right >= 500 && rc->left >= 500) ? 1 : 0;
+    // (real GetClientRect only fails on the fake sentinel HWNDs). The
+    // three fixture regions start at left = 0 / 500 / 670.
+    int ri = rc->left / 300;
+    if (ri > PHYS_COUNT - 1) ri = PHYS_COUNT - 1;
     struct RegFake *f = &g_reg[ri];
     f->captures++;
 
@@ -97,22 +101,16 @@ static BOOL fakeRead(OcrEngine *engine, const unsigned char *bgra,
     return TRUE;
 }
 
-static OcrRule makeRule(OcrEdge edge, const char *kw, int frames, int pct) {
-    OcrRule r;
-    memset(&r, 0, sizeof(r));
-    strncpy(r.keywords, kw, sizeof(r.keywords) - 1);
-    r.edge = edge;
-    r.confirmFrames = frames;
-    r.lossPercent = pct;
-    return r;
-}
-
-static OcrRegion g_regions[2];
+static OcrSessionRegion g_sessionRegions[OCR_MAX_REGIONS];
+static OcrSessionGroup  g_sessionGroups[OCR_MAX_GROUPS];
 
 static void setupSession(OcrSession *s, BOOL changeDetect) {
     memset(s, 0, sizeof(*s));
-    memset(g_regions, 0, sizeof(g_regions));
-    s->regions = g_regions;
+    memset(g_sessionRegions, 0, sizeof(g_sessionRegions));
+    memset(g_sessionGroups, 0, sizeof(g_sessionGroups));
+    memset(g_reg, 0, sizeof(g_reg));
+    s->regions = g_sessionRegions;
+    s->groups = g_sessionGroups;
     s->intervalMs = 200;
     s->changeDetect = changeDetect;
     s->madThreshold = 5;
@@ -123,19 +121,44 @@ static void setupSession(OcrSession *s, BOOL changeDetect) {
     s->targetAliveFn = fakeTargetAlive;
     s->engine = NULL;
     s->nowMsFn = fakeNow;
-    memset(g_reg, 0, sizeof(g_reg));
     g_fakeNow = 0;
     g_targetAlive = TRUE;
 }
 
-static void setRegion(OcrSession *s, int i, OcrRule rule,
-                      double x, double wfrac) {
-    s->regions[i].rule = rule;
-    ocrRuleStateInit(&s->regions[i].state);
-    s->regions[i].rule.norm.x = x;
-    s->regions[i].rule.norm.y = 0.0;
-    s->regions[i].rule.norm.w = wfrac;
-    s->regions[i].rule.norm.h = 0.1;
+// Lay a physical region out on the virtual client. x/wfrac are client
+// fractions; 0 / 0.5 / 0.67 map onto fake region indices 0 / 1 / 2.
+static void setRegion(OcrSession *s, size_t i, double x, double wfrac) {
+    g_sessionRegions[i].norm.x = x;
+    g_sessionRegions[i].norm.y = 0.0;
+    g_sessionRegions[i].norm.w = wfrac;
+    g_sessionRegions[i].norm.h = 0.1;
+    if (i + 1 > s->regionCount) s->regionCount = i + 1;
+}
+
+static void addGroup(OcrSession *s, size_t gi, OcrEdge edge, int loss,
+                     int frames, const int *memberRegion,
+                     const char *const *memberKw, size_t memberCount) {
+    OcrSessionGroup *sg = &g_sessionGroups[gi];
+    memset(sg, 0, sizeof(*sg));
+    sg->group.edge = edge;
+    sg->group.lossPercent = loss;
+    sg->group.confirmFrames = frames;
+    sg->group.memberCount = memberCount;
+    for (size_t k = 0; k < memberCount; k++) {
+        sg->group.members[k].regionIndex = memberRegion[k];
+        strncpy(sg->group.members[k].keywords, memberKw[k],
+                sizeof(sg->group.members[k].keywords) - 1);
+        s->referenced[memberRegion[k]] = TRUE;
+    }
+    ocrRuleStateInit(&sg->state);
+    if (gi + 1 > s->groupCount) s->groupCount = gi + 1;
+}
+
+static void addSingleGroup(OcrSession *s, OcrEdge edge, const char *kw,
+                           int frames, int loss) {
+    int region = 0;
+    const char *kws[1] = { kw };
+    addGroup(s, 0, edge, loss, frames, &region, kws, 1);
 }
 
 static int pumpOnce(OcrSession *s, OcrSessionEvent *ev, int cap) {
@@ -152,25 +175,29 @@ static int countEvent(const OcrSessionEvent *ev, int n, const char *name) {
     return c;
 }
 
+static void framesFor(int ri, const struct Frame *frames, int n) {
+    g_reg[ri].frames = frames;
+    g_reg[ri].n = n;
+}
+
 // --- (a) seed PRESENT, two empty frames confirm a DISAPPEAR at 95% -------
 
 static void test_disappear_trigger(void) {
     OcrSession s;
     setupSession(&s, FALSE);
-    s.regionCount = 1;
-    setRegion(&s, 0, makeRule(OCR_EDGE_DISAPPEAR, "仓库", 2, 95), 0.0, 0.5);
+    setRegion(&s, 0, 0.0, 0.5);
+    addSingleGroup(&s, OCR_EDGE_DISAPPEAR, "仓库", 2, 95);
 
     static const struct Frame frames[] = {
         {"仓库", 10, TRUE}, {"仓库", 10, TRUE}, {"仓库", 10, TRUE},
         {"", 20, TRUE}, {"", 20, TRUE},
     };
-    g_reg[0].frames = frames;
-    g_reg[0].n = (int)(sizeof(frames) / sizeof(frames[0]));
+    framesFor(0, frames, 5);
 
     char err[MSG_BUFSIZE];
     assert(ocrSessionSeed(&s, err));
-    assert(s.regions[0].state.armed);
-    assert(s.regions[0].state.stable == OCR_STABLE_PRESENT);
+    assert(g_sessionGroups[0].state.armed);
+    assert(g_sessionGroups[0].state.stable == OCR_STABLE_PRESENT);
 
     OcrSessionEvent ev[16];
     int total = 0;
@@ -182,20 +209,29 @@ static void test_disappear_trigger(void) {
     // Only the 4th pump fires; trigger produces two event rows.
     assert(total == 2);
     assert(strcmp(ev[0].event, "rule_trigger") == 0);
-    assert(ev[0].regionIndex == 0);
+    assert(ev[0].groupIndex == 0);
     assert(ev[0].lossPercent == 95);
     assert(strcmp(ev[1].event, "loss_change") == 0);
+    assert(ev[1].groupIndex == 0);
     assert(ev[1].lossPercent == 95);
 }
 
-// --- (b) two regions firing the same pump: events ordered by region index -
+// --- (b) two groups firing the same pump: both get rule_trigger rows, ----
+//     but only the first group in table order applies its gear.          --
 
-static void test_two_region_order(void) {
+static void test_two_groups_first_gear(void) {
     OcrSession s;
     setupSession(&s, FALSE);
-    s.regionCount = 2;
-    setRegion(&s, 0, makeRule(OCR_EDGE_DISAPPEAR, "仓库", 2, 95), 0.0, 0.5);
-    setRegion(&s, 1, makeRule(OCR_EDGE_APPEAR, "重连", 2, 50), 0.5, 0.5);
+    setRegion(&s, 0, 0.0, 0.5);
+    setRegion(&s, 1, 0.5, 0.5);
+    {
+        int r0 = 0;
+        const char *k0[1] = { "仓库" };
+        int r1 = 1;
+        const char *k1[1] = { "重连" };
+        addGroup(&s, 0, OCR_EDGE_DISAPPEAR, 95, 2, &r0, k0, 1);
+        addGroup(&s, 1, OCR_EDGE_APPEAR, 50, 2, &r1, k1, 1);
+    }
 
     static const struct Frame f0[] = {
         {"仓库", 10, TRUE}, {"仓库", 10, TRUE}, {"仓库", 10, TRUE},
@@ -205,12 +241,16 @@ static void test_two_region_order(void) {
         {"", 10, TRUE}, {"", 10, TRUE}, {"", 10, TRUE},
         {"重连", 10, TRUE}, {"重连", 10, TRUE},
     };
-    g_reg[0].frames = f0; g_reg[0].n = 5;
-    g_reg[1].frames = f1; g_reg[1].n = 5;
+    framesFor(0, f0, 5);
+    framesFor(1, f1, 5);
 
-    char err[MSG_BUFSIZE];
+    char path[1024], err[MSG_BUFSIZE];
+    s.timeline = ocrTimelineOpen("build/tests/tl-twogroups", path,
+                                 sizeof(path), err);
+    assert(s.timeline != NULL);
+
     assert(ocrSessionSeed(&s, err));
-    assert(s.regions[1].state.stable == OCR_STABLE_ABSENT);
+    assert(g_sessionGroups[1].state.stable == OCR_STABLE_ABSENT);
 
     OcrSessionEvent ev[16];
     int total = 0;
@@ -218,26 +258,45 @@ static void test_two_region_order(void) {
         g_fakeNow += 1000;
         total += pumpOnce(&s, ev + total, (int)(16 - total));
     }
-    assert(total == 4);
-    // Region 0 (index order first) at 95, then region 1 at 50.
-    assert(ev[0].regionIndex == 0 && ev[0].lossPercent == 95);
+    assert(total == 3);
     assert(strcmp(ev[0].event, "rule_trigger") == 0);
-    assert(ev[1].regionIndex == 0 && ev[1].lossPercent == 95);
+    assert(ev[0].groupIndex == 0 && ev[0].lossPercent == 95);
     assert(strcmp(ev[1].event, "loss_change") == 0);
-    assert(ev[2].regionIndex == 1 && ev[2].lossPercent == 50);
+    assert(ev[1].groupIndex == 0 && ev[1].lossPercent == 95);
     assert(strcmp(ev[2].event, "rule_trigger") == 0);
-    assert(ev[3].regionIndex == 1 && ev[3].lossPercent == 50);
-    assert(strcmp(ev[3].event, "loss_change") == 0);
+    assert(ev[2].groupIndex == 1 && ev[2].lossPercent == 50);
+    assert(countEvent(ev, total, "rule_trigger") == 2);
+    assert(countEvent(ev, total, "loss_change") == 1);
+    ocrTimelineClose(s.timeline);
+
+    // CSV mirrors the arbitration: both trigger rows, one loss_change.
+    FILE *f = fopen(path, "rb");
+    assert(f);
+    fseek(f, 0, SEEK_END);
+    long len = ftell(f);
+    rewind(f);
+    char *csv = malloc((size_t)len + 1);
+    assert(csv && fread(csv, 1, (size_t)len, f) == (size_t)len);
+    csv[len] = '\0';
+    fclose(f);
+    assert(strstr(csv, "rule_trigger,group 1,,,disappear,95,group:1,")
+           != NULL);
+    assert(strstr(csv, "rule_trigger,group 2,重连,,appear,50,group:2,")
+           != NULL);
+    assert(strstr(csv, "loss_change,group 1,,,disappear,95,group:1,")
+           != NULL);
+    assert(strstr(csv, "loss_change,group 2,") == NULL);
+    free(csv);
 }
 
 // --- (c) UNAVAILABLE neither triggers nor resets the confirm run; the ---
-//     unavailable event is rate-limited to one per 5 s per region.       --
+//     unavailable event is rate-limited to one per 5 s per group.        --
 
 static void test_unavailable_holds_run(void) {
     OcrSession s;
     setupSession(&s, FALSE);
-    s.regionCount = 1;
-    setRegion(&s, 0, makeRule(OCR_EDGE_DISAPPEAR, "仓库", 2, 95), 0.0, 0.5);
+    setRegion(&s, 0, 0.0, 0.5);
+    addSingleGroup(&s, OCR_EDGE_DISAPPEAR, "仓库", 2, 95);
 
     static const struct Frame frames[] = {
         {"仓库", 10, TRUE},  // seed
@@ -246,8 +305,7 @@ static void test_unavailable_holds_run(void) {
         {"", 10, FALSE},     // pump 3: unavailable, suppressed (<5s)
         {"", 10, TRUE},      // pump 4: run = 2 -> fires
     };
-    g_reg[0].frames = frames;
-    g_reg[0].n = 5;
+    framesFor(0, frames, 5);
 
     char err[MSG_BUFSIZE];
     assert(ocrSessionSeed(&s, err));
@@ -273,8 +331,8 @@ static void test_unavailable_holds_run(void) {
 static void test_unarmed_seed_fail_closed(void) {
     OcrSession s;
     setupSession(&s, FALSE);
-    s.regionCount = 1;
-    setRegion(&s, 0, makeRule(OCR_EDGE_DISAPPEAR, "仓库", 2, 95), 0.0, 0.5);
+    setRegion(&s, 0, 0.0, 0.5);
+    addSingleGroup(&s, OCR_EDGE_DISAPPEAR, "仓库", 2, 95);
 
     static const struct Frame frames[] = {
         {"", 10, FALSE},     // seed capture fails: stays unarmed
@@ -284,12 +342,11 @@ static void test_unarmed_seed_fail_closed(void) {
         {"", 10, TRUE},      // pump 4: run = 1
         {"", 10, TRUE},      // pump 5: run = 2 -> fires once
     };
-    g_reg[0].frames = frames;
-    g_reg[0].n = 6;
+    framesFor(0, frames, 6);
 
     char err[MSG_BUFSIZE];
     assert(!ocrSessionSeed(&s, err)); // nothing armed -> Start must refuse
-    assert(!s.regions[0].state.armed);
+    assert(!g_sessionGroups[0].state.armed);
 
     OcrSessionEvent ev[16];
     int total = 0;
@@ -315,10 +372,9 @@ static void test_change_detection_gate(void) {
 
     OcrSession s;
     setupSession(&s, TRUE);
-    s.regionCount = 1;
-    setRegion(&s, 0, makeRule(OCR_EDGE_DISAPPEAR, "仓库", 2, 95), 0.0, 0.5);
-    g_reg[0].frames = frames;
-    g_reg[0].n = 3;
+    setRegion(&s, 0, 0.0, 0.5);
+    addSingleGroup(&s, OCR_EDGE_DISAPPEAR, "仓库", 2, 95);
+    framesFor(0, frames, 3);
     char err[MSG_BUFSIZE];
     assert(ocrSessionSeed(&s, err));
     assert(g_reg[0].reads == 1);
@@ -334,10 +390,9 @@ static void test_change_detection_gate(void) {
     // changeDetect = FALSE: the same sequence reads every frame.
     OcrSession s2;
     setupSession(&s2, FALSE);
-    s2.regionCount = 1;
-    setRegion(&s2, 0, makeRule(OCR_EDGE_DISAPPEAR, "仓库", 2, 95), 0.0, 0.5);
-    g_reg[0].frames = frames; // setupSession reset the fake state
-    g_reg[0].n = 3;
+    setRegion(&s2, 0, 0.0, 0.5);
+    addSingleGroup(&s2, OCR_EDGE_DISAPPEAR, "仓库", 2, 95);
+    framesFor(0, frames, 3); // setupSession reset the fake state
     assert(ocrSessionSeed(&s2, err));
     g_fakeNow += 1000;
     pumpOnce(&s2, ev, 8);
@@ -351,8 +406,8 @@ static void test_change_detection_gate(void) {
 static void test_change_gate_reuses_last_text_disappear(void) {
     OcrSession s;
     setupSession(&s, TRUE); // change detection ON, MAD threshold 5
-    s.regionCount = 1;
-    setRegion(&s, 0, makeRule(OCR_EDGE_DISAPPEAR, "仓库", 2, 95), 0.0, 0.5);
+    setRegion(&s, 0, 0.0, 0.5);
+    addSingleGroup(&s, OCR_EDGE_DISAPPEAR, "仓库", 2, 95);
 
     static const struct Frame frames[] = {
         {"仓库", 10, TRUE}, // seed: armed PRESENT
@@ -360,8 +415,7 @@ static void test_change_gate_reuses_last_text_disappear(void) {
         {"", 20, TRUE},     // pump 2: changed -> OCR miss, run = 1
         {"", 20, TRUE},     // pump 3: identical blank -> reuse "", run = 2
     };
-    g_reg[0].frames = frames;
-    g_reg[0].n = 4;
+    framesFor(0, frames, 4);
 
     char err[MSG_BUFSIZE];
     assert(ocrSessionSeed(&s, err));
@@ -392,16 +446,15 @@ static void test_change_gate_reuses_last_text_disappear(void) {
 static void test_change_gate_reuses_last_text_appear(void) {
     OcrSession s;
     setupSession(&s, TRUE);
-    s.regionCount = 1;
-    setRegion(&s, 0, makeRule(OCR_EDGE_APPEAR, "重连", 2, 50), 0.0, 0.5);
+    setRegion(&s, 0, 0.0, 0.5);
+    addSingleGroup(&s, OCR_EDGE_APPEAR, "重连", 2, 50);
 
     static const struct Frame frames[] = {
         {"", 10, TRUE},     // seed: armed ABSENT
         {"重连", 20, TRUE}, // pump 1: changed -> match, run = 1
         {"重连", 20, TRUE}, // pump 2: identical -> reuse, run = 2 -> fires
     };
-    g_reg[0].frames = frames;
-    g_reg[0].n = 3;
+    framesFor(0, frames, 3);
 
     char err[MSG_BUFSIZE];
     assert(ocrSessionSeed(&s, err));
@@ -421,14 +474,14 @@ static void test_change_gate_reuses_last_text_appear(void) {
 
 // --- (j) a captured-but-black frame (locked desktop, exclusive fullscreen)
 //     is a capture failure, never an empty OCR text: an armed disappear
-//     rule neither confirms nor triggers on it; when the real picture
+//     group neither confirms nor triggers on it; when the real picture
 //     returns, the state machine resumes where it stood.                  --
 
 static void test_blank_frame_is_unavailable(void) {
     OcrSession s;
     setupSession(&s, FALSE);
-    s.regionCount = 1;
-    setRegion(&s, 0, makeRule(OCR_EDGE_DISAPPEAR, "仓库", 2, 95), 0.0, 0.5);
+    setRegion(&s, 0, 0.0, 0.5);
+    addSingleGroup(&s, OCR_EDGE_DISAPPEAR, "仓库", 2, 95);
 
     static const struct Frame frames[] = {
         {"仓库", 10, TRUE, FALSE}, // seed: armed PRESENT
@@ -438,8 +491,7 @@ static void test_blank_frame_is_unavailable(void) {
         {"",   20, TRUE, FALSE},   // pump 4: real empty frame, run = 1
         {"",   20, TRUE, FALSE},   // pump 5: run = 2 -> fires
     };
-    g_reg[0].frames = frames;
-    g_reg[0].n = 6;
+    framesFor(0, frames, 6);
 
     char err[MSG_BUFSIZE];
     assert(ocrSessionSeed(&s, err));
@@ -470,22 +522,26 @@ static void test_blank_frame_is_unavailable(void) {
 }
 
 // --- (k) per-tick identity gate: a HWND that died and got recycled to ---
-//     another process is never captured or OCR'd - every region reports
-//     unavailable, no capture happens, no rule can fire. Seed refuses.  --
+//     another process is never captured or OCR'd - every GROUP reports
+//     unavailable (independently rate-limited), no group can fire.       --
 
 static void test_target_identity_gate(void) {
     OcrSession s;
     setupSession(&s, FALSE);
-    s.regionCount = 1;
-    setRegion(&s, 0, makeRule(OCR_EDGE_DISAPPEAR, "仓库", 2, 95), 0.0, 0.5);
+    setRegion(&s, 0, 0.0, 0.5);
+    {
+        int r0 = 0;
+        const char *kw[1] = { "仓库" };
+        addGroup(&s, 0, OCR_EDGE_DISAPPEAR, 95, 2, &r0, kw, 1);
+        addGroup(&s, 1, OCR_EDGE_DISAPPEAR, 50, 3, &r0, kw, 1);
+    }
 
     static const struct Frame frames[] = {
         {"仓库", 10, TRUE, FALSE}, // seed (capture #0)
-        {"",   20, TRUE, FALSE},    // pump when alive again: run = 1
-        {"",   20, TRUE, FALSE},    // run = 2 -> fires
+        {"",   20, TRUE, FALSE},   // pump when alive again: run = 1
+        {"",   20, TRUE, FALSE},   // group 0 run = 2 fires; group 1 waits
     };
-    g_reg[0].frames = frames;
-    g_reg[0].n = 3;
+    framesFor(0, frames, 3);
 
     // Seed refuses while the target is dead/recycled (fail closed).
     char err[MSG_BUFSIZE];
@@ -498,7 +554,8 @@ static void test_target_identity_gate(void) {
     g_targetAlive = TRUE;
     assert(ocrSessionSeed(&s, err));
 
-    // Dead ticks: no capture, no trigger, rate-limited unavailable rows.
+    // Dead ticks: no capture, no trigger, one unavailable row per group
+    // per 5 s window.
     OcrSessionEvent ev[16];
     int total = 0;
     g_targetAlive = FALSE;
@@ -509,10 +566,11 @@ static void test_target_identity_gate(void) {
     g_fakeNow = 7000;
     total += pumpOnce(&s, ev + total, (int)(16 - total));
     assert(g_reg[0].captures == 1); // seed only
-    assert(countEvent(ev, total, "capture_unavailable") == 2);
+    assert(countEvent(ev, total, "capture_unavailable") == 4);
     assert(countEvent(ev, total, "rule_trigger") == 0);
 
-    // Back to the real target: state machine resumes.
+    // Back to the real target: the 2-frame group fires, the 3-frame one
+    // keeps waiting.
     g_targetAlive = TRUE;
     g_fakeNow = 8000;
     total += pumpOnce(&s, ev + total, (int)(16 - total));
@@ -521,6 +579,178 @@ static void test_target_identity_gate(void) {
     assert(g_reg[0].captures == 3);
     assert(countEvent(ev, total, "rule_trigger") == 1);
     assert(countEvent(ev, total, "loss_change") == 1);
+}
+
+// --- AND truth table: a two-member group synthesizes one poll per tick; -
+//     any miss -> MISSED, any unavailable -> UNAVAILABLE (freezes), and a
+//     trigger carries the member texts joined with " | ".                --
+
+static void test_and_group_truth_table(void) {
+    OcrSession s;
+    setupSession(&s, FALSE);
+    setRegion(&s, 0, 0.0, 0.5);
+    setRegion(&s, 1, 0.5, 0.5);
+    {
+        int regions[2] = { 0, 1 };
+        const char *kw[2] = { "就绪", "仓库" };
+        addGroup(&s, 0, OCR_EDGE_DISAPPEAR, 95, 2, regions, kw, 2);
+    }
+
+    static const struct Frame f0[] = {
+        {"就绪", 10, TRUE}, // seed
+        {"其他", 11, TRUE}, // pump 1: r0 misses -> MISSED, run = 1
+        {"",  0, FALSE},    // pump 2: r0 unavailable -> UNAVAILABLE
+        {"其他", 12, TRUE}, // pump 3: MISSED, run = 2 -> fires
+    };
+    static const struct Frame f1[] = {
+        {"仓库", 20, TRUE}, {"仓库", 20, TRUE},
+        {"仓库", 20, TRUE}, {"仓库", 20, TRUE},
+    };
+    framesFor(0, f0, 4);
+    framesFor(1, f1, 4);
+
+    char err[MSG_BUFSIZE];
+    assert(ocrSessionSeed(&s, err));
+    assert(g_sessionGroups[0].state.stable == OCR_STABLE_PRESENT);
+
+    OcrSessionEvent ev[16];
+    int total = 0;
+    g_fakeNow = 1000;
+    total += pumpOnce(&s, ev + total, (int)(16 - total));
+    assert(total == 0);
+    g_fakeNow = 2000;
+    total += pumpOnce(&s, ev + total, (int)(16 - total));
+    assert(countEvent(ev, total, "capture_unavailable") == 1);
+    assert(countEvent(ev, total, "rule_trigger") == 0);
+    g_fakeNow = 3000;
+    total += pumpOnce(&s, ev + total, (int)(16 - total));
+    assert(countEvent(ev, total, "rule_trigger") == 1);
+    assert(countEvent(ev, total, "loss_change") == 1);
+    int trig = -1;
+    for (int i = 0; i < total; i++)
+        if (strcmp(ev[i].event, "rule_trigger") == 0) trig = i;
+    assert(trig == total - 2);
+    assert(ev[trig].groupIndex == 0);
+    assert(ev[trig].lossPercent == 95);
+    assert(ev[trig].text && strcmp(ev[trig].text, "其他 | 仓库") == 0);
+}
+
+// --- union capture: regions no group references are never captured. -----
+
+static void test_union_capture_only_referenced(void) {
+    OcrSession s;
+    setupSession(&s, FALSE);
+    setRegion(&s, 0, 0.0, 0.33);
+    setRegion(&s, 1, 0.34, 0.2);
+    setRegion(&s, 2, 0.67, 0.33);
+    {
+        int r2 = 2;
+        const char *kw[1] = { "仓库" };
+        addGroup(&s, 0, OCR_EDGE_DISAPPEAR, 95, 2, &r2, kw, 1);
+    }
+
+    static const struct Frame f2[] = {
+        {"仓库", 30, TRUE}, {"仓库", 31, TRUE},
+    };
+    framesFor(2, f2, 2);
+
+    char err[MSG_BUFSIZE];
+    assert(ocrSessionSeed(&s, err));
+    OcrSessionEvent ev[8];
+    g_fakeNow = 1000;
+    assert(pumpOnce(&s, ev, 8) == 0);
+
+    assert(g_reg[0].captures == 0);
+    assert(g_reg[1].captures == 0);
+    assert(g_reg[2].captures == 2); // seed + one pump
+}
+
+// --- lenient seed: one readable member region is enough for Start; the ---
+//     group stays unarmed until the first tick every member is readable.  --
+
+static void test_lenient_seed(void) {
+    OcrSession s;
+    setupSession(&s, FALSE);
+    setRegion(&s, 0, 0.0, 0.5);
+    setRegion(&s, 1, 0.5, 0.5);
+    {
+        int regions[2] = { 0, 1 };
+        const char *kw[2] = { "就绪", "仓库" };
+        addGroup(&s, 0, OCR_EDGE_DISAPPEAR, 95, 2, regions, kw, 2);
+    }
+
+    static const struct Frame f0[] = {
+        {"就绪", 10, TRUE}, {"就绪", 10, TRUE}, {"就绪", 10, TRUE},
+    };
+    static const struct Frame f1[] = {
+        {"", 0, FALSE},     // seed capture fails
+        {"仓库", 20, TRUE}, // pump 1: both readable -> arm PRESENT
+        {"仓库", 20, TRUE}, // pump 2: steady
+    };
+    framesFor(0, f0, 3);
+    framesFor(1, f1, 3);
+
+    char err[MSG_BUFSIZE];
+    assert(ocrSessionSeed(&s, err)); // >=1 referenced region readable
+    assert(!g_sessionGroups[0].state.armed);
+
+    OcrSessionEvent ev[8];
+    int total = 0;
+    g_fakeNow = 1000;
+    total += pumpOnce(&s, ev + total, 8 - total);
+    assert(g_sessionGroups[0].state.armed);
+    assert(g_sessionGroups[0].state.stable == OCR_STABLE_PRESENT);
+    assert(total == 0); // arming tick can't trigger
+    g_fakeNow = 2000;
+    total += pumpOnce(&s, ev + total, 8 - total);
+    assert(total == 0);
+}
+
+// --- CSV identity and RFC4180 escaping: group columns + joined text. -----
+
+static void test_csv_identity_and_escape(void) {
+    OcrSession s;
+    setupSession(&s, FALSE); // every frame is OCR-read on purpose
+    setRegion(&s, 0, 0.0, 0.5);
+    addSingleGroup(&s, OCR_EDGE_APPEAR, "b", 2, 50);
+
+    static const struct Frame frames[] = {
+        {"init", 10, TRUE},       // seed: armed ABSENT
+        {"a,b\"c", 20, TRUE},     // pump 1: match, run = 1
+        {"a,b\"c", 30, TRUE},     // pump 2: run = 2 -> fires
+    };
+    framesFor(0, frames, 3);
+
+    char path[1024], err[MSG_BUFSIZE];
+    s.timeline = ocrTimelineOpen("build/tests/tl-escape", path,
+                                 sizeof(path), err);
+    assert(s.timeline != NULL);
+    assert(ocrSessionSeed(&s, err));
+
+    OcrSessionEvent ev[8];
+    int total = 0;
+    g_fakeNow += 1000;
+    total += pumpOnce(&s, ev + total, 8 - total);
+    g_fakeNow += 1000;
+    total += pumpOnce(&s, ev + total, 8 - total);
+    assert(total == 2);
+    assert(ev[0].text && strcmp(ev[0].text, "a,b\"c") == 0);
+    ocrTimelineClose(s.timeline);
+
+    FILE *f = fopen(path, "rb");
+    assert(f);
+    fseek(f, 0, SEEK_END);
+    long len = ftell(f);
+    rewind(f);
+    char *csv = malloc((size_t)len + 1);
+    assert(csv && fread(csv, 1, (size_t)len, f) == (size_t)len);
+    csv[len] = '\0';
+    fclose(f);
+    assert(strstr(csv, "rule_trigger,group 1,\"a,b\"\"c\",,appear,50,"
+                       "group:1,") != NULL);
+    assert(strstr(csv, "loss_change,group 1,,,appear,50,group:1,")
+           != NULL);
+    free(csv);
 }
 
 // --- worker: events go through the queue to a main-thread drain ----------
@@ -537,8 +767,8 @@ static void test_worker_queue(void) {
     setupSession(&s, FALSE);
     s.nowMsFn = NULL; // worker uses the wall clock
     s.intervalMs = 200;
-    s.regionCount = 1;
-    setRegion(&s, 0, makeRule(OCR_EDGE_APPEAR, "重连", 2, 50), 0.0, 0.5);
+    setRegion(&s, 0, 0.0, 0.5);
+    addSingleGroup(&s, OCR_EDGE_APPEAR, "重连", 2, 50);
 
     static const struct Frame frames[] = {
         {"仓库", 10, TRUE},    // seed: keyword absent -> armed ABSENT
@@ -546,8 +776,7 @@ static void test_worker_queue(void) {
         {"重连", 10, TRUE},
         {"重连", 10, TRUE},
     };
-    g_reg[0].frames = frames;
-    g_reg[0].n = 4;
+    framesFor(0, frames, 4);
 
     char err[MSG_BUFSIZE];
     assert(ocrSessionSeed(&s, err));
@@ -576,11 +805,10 @@ static void test_worker_busy_skips_beats(void) {
     setupSession(&s, FALSE);
     s.nowMsFn = NULL;
     s.intervalMs = 100;
-    s.regionCount = 1;
-    setRegion(&s, 0, makeRule(OCR_EDGE_DISAPPEAR, "仓库", 2, 95), 0.0, 0.5);
+    setRegion(&s, 0, 0.0, 0.5);
+    addSingleGroup(&s, OCR_EDGE_DISAPPEAR, "仓库", 2, 95);
     static const struct Frame frames[] = {{"仓库", 10, TRUE}};
-    g_reg[0].frames = frames;
-    g_reg[0].n = 1;
+    framesFor(0, frames, 1);
 
     g_entered = CreateEvent(NULL, FALSE, FALSE, NULL); // auto-reset
     g_release = CreateEvent(NULL, FALSE, FALSE, NULL);
@@ -616,73 +844,22 @@ static void test_worker_busy_skips_beats(void) {
     g_blockCapture = FALSE;
 }
 
-// --- (g) spec §5: trigger rows written to the CSV carry source ---------
-//         "rule:<region name>" (unnamed -> rule:rN), not a generic tag. --
-
-static void test_timeline_rule_source(void) {
-    OcrSession s;
-    setupSession(&s, FALSE);
-    s.regionCount = 1;
-    setRegion(&s, 0, makeRule(OCR_EDGE_DISAPPEAR, "仓库", 2, 95), 0.0, 0.5);
-
-    static const struct Frame frames[] = {
-        {"仓库", 10, TRUE}, {"仓库", 10, TRUE}, {"仓库", 10, TRUE},
-        {"", 20, TRUE}, {"", 20, TRUE},
-    };
-    g_reg[0].frames = frames;
-    g_reg[0].n = 5;
-
-    char path[1024], err[MSG_BUFSIZE];
-    char *csv = NULL;
-    long len = 0;
-    FILE *f;
-    s.timeline = ocrTimelineOpen("build/tests/tl-source", path,
-                                 sizeof(path), err);
-    assert(s.timeline != NULL);
-
-    assert(ocrSessionSeed(&s, err));
-    OcrSessionEvent ev[16];
-    int total = 0;
-    for (int i = 0; i < 4; i++) {
-        g_fakeNow += 1000;
-        total += pumpOnce(&s, ev + total, (int)(16 - total));
-    }
-    assert(total == 2);
-    ocrTimelineClose(s.timeline);
-
-    f = fopen(path, "rb");
-    assert(f != NULL);
-    assert(fseek(f, 0, SEEK_END) == 0);
-    len = ftell(f);
-    assert(len > 0 && len < 1 << 20);
-    rewind(f);
-    csv = malloc((size_t)len + 1);
-    assert(csv != NULL);
-    assert(fread(csv, 1, (size_t)len, f) == (size_t)len);
-    csv[len] = '\0';
-    fclose(f);
-
-    // rule_trigger and loss_change rows both tag the rule by name; the
-    // unnamed test rule falls back to r0, and the edge column is set.
-    // Columns: event,region=r0,ocr_text="",keyword="",edge,loss,source,note
-    assert(strstr(csv, "rule_trigger,r0,,,disappear,95,rule:r0,") != NULL);
-    assert(strstr(csv, "loss_change,r0,,,disappear,95,rule:r0,") != NULL);
-    free(csv);
-}
-
 int main(void) {
-    test_disappear_trigger();      // (a)
-    test_two_region_order();       // (b)
-    test_unavailable_holds_run();  // (c)
-    test_change_detection_gate();  // (d)
-    test_unarmed_seed_fail_closed(); // (f)
+    test_disappear_trigger();                 // (a)
+    test_two_groups_first_gear();             // (b) + CSV arbitration
+    test_unavailable_holds_run();             // (c)
+    test_change_detection_gate();             // (d)
+    test_unarmed_seed_fail_closed();          // (f)
     test_worker_queue();
-    test_worker_busy_skips_beats(); // (e)
+    test_worker_busy_skips_beats();           // (e)
     test_change_gate_reuses_last_text_disappear(); // (h)
-    test_change_gate_reuses_last_text_appear();    // (i)
-    test_blank_frame_is_unavailable();             // (j)
-    test_target_identity_gate();                   // (k)
-    test_timeline_rule_source();    // (g)
+    test_change_gate_reuses_last_text_appear();     // (i)
+    test_blank_frame_is_unavailable();        // (j)
+    test_target_identity_gate();              // (k)
+    test_and_group_truth_table();
+    test_union_capture_only_referenced();
+    test_lenient_seed();
+    test_csv_identity_and_escape();
 
     printf("OK: ocr_session\n");
     return 0;

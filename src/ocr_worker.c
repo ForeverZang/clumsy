@@ -90,7 +90,8 @@ BOOL ocrWorkerStart(OcrSession *session, OcrEventSink sink,
                     char err[MSG_BUFSIZE]) {
     (void)sink; // events are collected via ocrWorkerDrain on the GUI thread
     if (err) err[0] = '\0';
-    if (!session || !session->regions || session->regionCount == 0
+    if (!session || !session->groups || session->groupCount == 0
+        || !session->regions || session->regionCount == 0
         || !session->captureFn || !session->readFn) {
         if (err) strncpy(err, "invalid OCR worker session", MSG_BUFSIZE - 1);
         return FALSE;

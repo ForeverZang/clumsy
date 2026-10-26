@@ -21,7 +21,7 @@ typedef struct {
     const char *keyword;
     const char *edge;       // "appear"/"disappear" or NULL
     int         lossPercent; // -1 = not applicable -> empty cell
-    const char *source;     // initial_slider / rule:<name> / manual_stop
+    const char *source;     // initial_slider / group:<n> / system / manual_stop
     const char *note;
 } OcrTimelineEvent;
 

@@ -3,6 +3,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
 
 #include "ocr_session.h"
 
@@ -15,13 +16,13 @@ static UINT64 sessionNow(const OcrSession *s) {
 // Fake sentinel HWNDs used by unit tests fail GetClientRect; map their
 // norms onto a virtual 1000x1000 client so capture fakes still receive
 // distinct per-region rectangles. A production HWND always succeeds.
-static RECT regionRect(const OcrSession *s, const OcrRegion *rgn) {
+static RECT regionRect(const OcrSession *s, const NormRect *norm) {
     RECT client;
     if (GetClientRect(s->target.hwnd, &client)
         && client.right > 0 && client.bottom > 0) {
-        return captureMapNorm(client.right, client.bottom, &rgn->rule.norm);
+        return captureMapNorm(client.right, client.bottom, norm);
     }
-    return captureMapNorm(1000, 1000, &rgn->rule.norm);
+    return captureMapNorm(1000, 1000, norm);
 }
 
 // Thumbnail scaled to fit OCR_THUMB_W x OCR_THUMB_MAX_H keeping ratio.
@@ -42,10 +43,10 @@ static void makeThumb(const unsigned char *bgra, int w, int h,
     *thumbH = gotH;
 }
 
-static void appendEvent(OcrSessionEvent *ev, int *n, int cap, int region,
+static void appendEvent(OcrSessionEvent *ev, int *n, int cap, int group,
                         int lossPercent, const char *name, const char *text) {
     if (*n >= cap) return;
-    ev[*n].regionIndex = region;
+    ev[*n].groupIndex = group;
     ev[*n].lossPercent = lossPercent;
     ev[*n].event = name;
     ev[*n].text = text;
@@ -53,27 +54,24 @@ static void appendEvent(OcrSessionEvent *ev, int *n, int cap, int region,
 }
 
 static char *claimTextSlot(OcrSession *s, const char *text) {
-    if (s->evTextNext >= OCR_MAX_REGIONS) return NULL;
+    if (s->evTextNext >= OCR_MAX_GROUPS) return NULL;
     char *slot = s->evText[s->evTextNext++];
     strncpy(slot, text ? text : "", OCR_EVENT_TEXT - 1);
     slot[OCR_EVENT_TEXT - 1] = '\0';
     return slot;
 }
 
-static void writeTimeline(OcrSession *s, const char *event, int region,
-                          const char *text, const OcrRule *rule,
-                          int lossPercent) {
+// Timeline identity for group-sourced rows: region column "group N",
+// source column "group:N" (1-based, table order).
+static void writeTimeline(OcrSession *s, const char *event, int gi,
+                          const char *text, int lossPercent) {
     if (!s->timeline) return;
 
-    char label[32];
-    if (rule->name[0]) snprintf(label, sizeof(label), "%s", rule->name);
-    else snprintf(label, sizeof(label), "r%d", region);
-
-    // spec §5: rule rows are attributable to the region that fired them;
-    // unnamed regions fall back to rN. Label lives in source, note stays
-    // free for operator annotations.
-    char source[40];
-    snprintf(source, sizeof(source), "rule:%s", label);
+    const OcrSessionGroup *sg = &s->groups[gi];
+    char label[24];
+    char source[32];
+    snprintf(label, sizeof(label), "group %d", gi + 1);
+    snprintf(source, sizeof(source), "group:%d", gi + 1);
 
     OcrTimelineEvent t;
     memset(&t, 0, sizeof(t));
@@ -82,55 +80,49 @@ static void writeTimeline(OcrSession *s, const char *event, int region,
     t.region = label;
     t.ocrText = text;
     t.keyword = NULL;
-    t.edge = rule->edge == OCR_EDGE_APPEAR ? "appear" : "disappear";
+    t.edge = sg->group.edge == OCR_EDGE_APPEAR ? "appear" : "disappear";
     t.lossPercent = lossPercent;
     t.source = source;
     t.note = NULL;
     (void)ocrTimelineEvent(s->timeline, &t);
 }
 
-static void emitTrigger(OcrSession *s, int region, OcrRegion *rgn,
-                        const char *rawText, int target,
-                        OcrSessionEvent *ev, int *n, int cap) {
-    char *slot = claimTextSlot(s, rawText);
-    appendEvent(ev, n, cap, region, target, "rule_trigger", slot);
-    writeTimeline(s, "rule_trigger", region, slot, &rgn->rule, target);
-    appendEvent(ev, n, cap, region, target, "loss_change", NULL);
-    writeTimeline(s, "loss_change", region, NULL, &rgn->rule, target);
-}
-
-static void emitUnavailable(OcrSession *s, int region, OcrRegion *rgn,
+static void emitUnavailable(OcrSession *s, int gi,
                             OcrSessionEvent *ev, int *n, int cap) {
+    OcrSessionGroup *sg = &s->groups[gi];
     UINT64 now = sessionNow(s);
-    if (rgn->lastUnavailableMs != 0
-        && now - rgn->lastUnavailableMs < OCR_UNAVAILABLE_QUIET_MS) {
+    if (sg->lastUnavailableMs != 0
+        && now - sg->lastUnavailableMs < OCR_UNAVAILABLE_QUIET_MS) {
         return;
     }
-    rgn->lastUnavailableMs = now;
-    appendEvent(ev, n, cap, region, -1, "capture_unavailable", NULL);
-    writeTimeline(s, "capture_unavailable", region, NULL, &rgn->rule, -1);
+    sg->lastUnavailableMs = now;
+    appendEvent(ev, n, cap, gi, -1, "capture_unavailable", NULL);
+    writeTimeline(s, "capture_unavailable", gi, NULL, -1);
 }
 
 static BOOL sessionValid(const OcrSession *s) {
     return s && s->regions && s->regionCount > 0
         && s->regionCount <= OCR_MAX_REGIONS
+        && s->groups && s->groupCount > 0
+        && s->groupCount <= OCR_MAX_GROUPS
         && s->captureFn && s->readFn;
 }
 
 // Per-tick identity gate before any capture: the HWND must still be the
 // live target. A dead/recycled/minimized tick emits the rate-limited
-// unavailable event for every region, triggers nothing, captures nothing.
+// unavailable event for every group, triggers nothing, captures nothing.
 static BOOL targetAlive(const OcrSession *s) {
     return !s->targetAliveFn || s->targetAliveFn(&s->target);
 }
 
-// One capture+OCR attempt on a region.
+// One capture+OCR attempt on one physical region.
 #define REGION_UNAVAILABLE 0 // capture or OCR failed
 #define REGION_READ        1 // *text holds fresh OCR text
 #define REGION_UNCHANGED  -1 // change detection skipped OCR this tick
-static int readRegion(OcrSession *s, OcrRegion *rgn, char *text,
-                      size_t textCap) {
-    RECT rc = regionRect(s, rgn);
+static int readPhysicalRegion(OcrSession *s, size_t ri, char *text,
+                              size_t textCap) {
+    OcrSessionRegion *rgn = &s->regions[ri];
+    RECT rc = regionRect(s, &rgn->norm);
     unsigned char *bgra = NULL;
     int w = 0, h = 0;
     char localErr[MSG_BUFSIZE];
@@ -139,7 +131,7 @@ static int readRegion(OcrSession *s, OcrRegion *rgn, char *text,
     }
     // PrintWindow success with a black/no-picture frame (locked desktop,
     // exclusive fullscreen) is not empty OCR text: treat it as
-    // unavailable so no armed rule can fire on a frame we never got.
+    // unavailable so no armed group can fire on a frame we never got.
     if (captureFrameBlank(bgra, w, h)) {
         captureFreeBitmap(bgra);
         return REGION_UNAVAILABLE;
@@ -166,6 +158,65 @@ static int readRegion(OcrSession *s, OcrRegion *rgn, char *text,
     return ok ? REGION_READ : REGION_UNAVAILABLE;
 }
 
+// Member OCR texts in member order joined with " | ", truncated to cap-1.
+static void joinMemberTexts(const OcrGroup *g, const OcrRegionObs *obs,
+                            size_t obsCount, char *out, size_t cap) {
+    size_t used = 0;
+    if (cap == 0) return;
+    out[0] = '\0';
+    for (size_t k = 0; k < g->memberCount; k++) {
+        int ri = g->members[k].regionIndex;
+        const char *text = (ri >= 0 && (size_t)ri < obsCount
+                            && obs[ri].available) ? obs[ri].text : "";
+        const char *sep = k == 0 ? "" : " | ";
+        size_t sepLen = strlen(sep);
+        if (used + sepLen < cap) {
+            memcpy(out + used, sep, sepLen);
+            used += sepLen;
+            out[used] = '\0';
+        }
+        size_t room = cap - 1 - used;
+        size_t len = strlen(text);
+        if (len > room) len = room;
+        memcpy(out + used, text, len);
+        used += len;
+        out[used] = '\0';
+        if (used >= cap - 1) break;
+    }
+}
+
+// Read every referenced physical region once, filling this tick's obs.
+// Unreferenced regions are never captured.
+static void readReferencedUnion(OcrSession *s, OcrRegionObs *obs,
+                                char readText[OCR_MAX_REGIONS][OCR_READ_TEXT]) {
+    for (size_t i = 0; i < s->regionCount; i++) {
+        obs[i].available = FALSE;
+        obs[i].text = NULL;
+        if (!s->referenced[i]) continue;
+
+        OcrSessionRegion *rgn = &s->regions[i];
+        int got = readPhysicalRegion(s, i, readText[i], OCR_READ_TEXT);
+        if (got == REGION_UNAVAILABLE) continue;
+
+        // spec §5/§6.4: below the change threshold OCR is skipped and the
+        // previous text is reused AS this period's observation. Thumb and
+        // text are always stored together, so UNCHANGED implies cache.
+        if (got == REGION_UNCHANGED) {
+            if (rgn->hasLastText) {
+                obs[i].available = TRUE;
+                obs[i].text = rgn->lastText;
+            }
+            continue;
+        }
+
+        strncpy(rgn->lastText, readText[i], OCR_EVENT_TEXT - 1);
+        rgn->lastText[OCR_EVENT_TEXT - 1] = '\0';
+        rgn->hasLastText = TRUE;
+        obs[i].available = TRUE;
+        obs[i].text = rgn->lastText;
+    }
+}
+
 BOOL ocrSessionSeed(OcrSession *s, char err[MSG_BUFSIZE]) {
     if (!sessionValid(s)) {
         if (err) strncpy(err, "invalid OCR session", MSG_BUFSIZE - 1);
@@ -181,15 +232,27 @@ BOOL ocrSessionSeed(OcrSession *s, char err[MSG_BUFSIZE]) {
         return FALSE;
     }
 
-    int armed = 0;
+    for (size_t gi = 0; gi < s->groupCount; gi++) {
+        ocrRuleStateInit(&s->groups[gi].state);
+        s->groups[gi].lastUnavailableMs = 0;
+    }
     for (size_t i = 0; i < s->regionCount; i++) {
-        OcrRegion *rgn = &s->regions[i];
-        ocrRuleStateInit(&rgn->state);
-        rgn->hasThumb = FALSE;
-        rgn->lastUnavailableMs = 0;
+        if (!s->referenced[i]) continue;
+        s->regions[i].hasThumb = FALSE;
+        s->regions[i].hasLastText = FALSE;
+    }
 
-        char text[OCR_READ_TEXT];
-        RECT rc = regionRect(s, rgn);
+    char readText[OCR_MAX_REGIONS][OCR_READ_TEXT];
+    OcrRegionObs obs[OCR_MAX_REGIONS];
+    memset(obs, 0, sizeof(obs));
+
+    // Lenient seed: capture the referenced union once; a group arms only
+    // when ALL its members read, but Start succeeds when >=1 region reads.
+    int readable = 0;
+    for (size_t i = 0; i < s->regionCount; i++) {
+        if (!s->referenced[i]) continue;
+        OcrSessionRegion *rgn = &s->regions[i];
+        RECT rc = regionRect(s, &rgn->norm);
         unsigned char *bgra = NULL;
         int w = 0, h = 0;
         char localErr[MSG_BUFSIZE];
@@ -198,8 +261,8 @@ BOOL ocrSessionSeed(OcrSession *s, char err[MSG_BUFSIZE]) {
             captureFreeBitmap(bgra); // NULL-safe; blank frame dropped
             continue;
         }
-        BOOL readOk = s->readFn(s->engine, bgra, w, h, text, sizeof(text),
-                                localErr);
+        BOOL readOk = s->readFn(s->engine, bgra, w, h, readText[i],
+                                OCR_READ_TEXT, localErr);
         if (readOk) {
             unsigned char gray[OCR_THUMB_W * OCR_THUMB_MAX_H];
             int tw = 0, th = 0;
@@ -208,22 +271,31 @@ BOOL ocrSessionSeed(OcrSession *s, char err[MSG_BUFSIZE]) {
             rgn->thumbW = tw;
             rgn->thumbH = th;
             rgn->hasThumb = TRUE;
-            BOOL present = ocrRuleMatches(&rgn->rule, text);
-            ocrRuleArm(&rgn->state, present);
-            strncpy(rgn->lastText, text, OCR_EVENT_TEXT - 1);
+            strncpy(rgn->lastText, readText[i], OCR_EVENT_TEXT - 1);
             rgn->lastText[OCR_EVENT_TEXT - 1] = '\0';
             rgn->hasLastText = TRUE;
-            armed++;
+            obs[i].available = TRUE;
+            obs[i].text = rgn->lastText;
+            readable++;
         }
         captureFreeBitmap(bgra);
     }
 
-    if (armed == 0) {
+    if (readable == 0) {
         if (err) {
             strncpy(err, "no OCR region could be read at start",
                     MSG_BUFSIZE - 1);
         }
         return FALSE;
+    }
+
+    for (size_t gi = 0; gi < s->groupCount; gi++) {
+        OcrSessionGroup *sg = &s->groups[gi];
+        OcrPoll poll = ocrGroupPoll(&sg->group, obs, s->regionCount);
+        if (poll == OCR_POLL_UNAVAILABLE) {
+            continue; // late arm on the first all-readable tick
+        }
+        ocrRuleArm(&sg->state, poll == OCR_POLL_MATCHED);
     }
     return TRUE;
 }
@@ -234,45 +306,54 @@ BOOL ocrSessionPump(OcrSession *s, OcrSessionEvent *ev, int *evCount,
 
     s->evTextNext = 0;
     if (!targetAlive(s)) {
-        for (size_t i = 0; i < s->regionCount; i++) {
-            emitUnavailable(s, (int)i, &s->regions[i], ev, evCount, evCap);
+        for (size_t gi = 0; gi < s->groupCount; gi++) {
+            emitUnavailable(s, (int)gi, ev, evCount, evCap);
         }
         return TRUE;
     }
-    for (size_t i = 0; i < s->regionCount; i++) {
-        OcrRegion *rgn = &s->regions[i];
-        char text[OCR_READ_TEXT];
-        int got = readRegion(s, rgn, text, sizeof(text));
-        if (got == REGION_UNAVAILABLE) {
-            emitUnavailable(s, (int)i, rgn, ev, evCount, evCap);
+
+    char readText[OCR_MAX_REGIONS][OCR_READ_TEXT];
+    OcrRegionObs obs[OCR_MAX_REGIONS];
+    readReferencedUnion(s, obs, readText);
+
+    int gearGroup = -1; // first firing group in table order wins gear
+    for (size_t gi = 0; gi < s->groupCount; gi++) {
+        OcrSessionGroup *sg = &s->groups[gi];
+        OcrPoll poll = ocrGroupPoll(&sg->group, obs, s->regionCount);
+
+        if (poll == OCR_POLL_UNAVAILABLE) {
+            emitUnavailable(s, (int)gi, ev, evCount, evCap);
+            continue;
+        }
+        // Seed missed this group: the first all-readable tick arms it
+        // with what is observed right now, so nothing can pre-trigger.
+        if (!sg->state.armed) {
+            ocrRuleArm(&sg->state, poll == OCR_POLL_MATCHED);
             continue;
         }
 
-        // spec §5/§6.4: below the change threshold OCR is skipped and the
-        // previous text is reused AS this period's observation, so steady
-        // frames still advance confirm runs. No cached text yet (seed read
-        // failed and no pump has succeeded) -> wait for a real frame.
-        const char *observed;
-        if (got == REGION_UNCHANGED) {
-            if (!rgn->hasLastText) continue;
-            observed = rgn->lastText;
-        } else {
-            strncpy(rgn->lastText, text, OCR_EVENT_TEXT - 1);
-            rgn->lastText[OCR_EVENT_TEXT - 1] = '\0';
-            rgn->hasLastText = TRUE;
-            observed = rgn->lastText;
+        int target = -1;
+        if (!ocrEdgeStep(&sg->state, sg->group.edge,
+                         sg->group.confirmFrames, sg->group.lossPercent,
+                         poll, &target)) {
+            continue;
         }
 
-        OcrPoll poll = ocrRuleMatches(&rgn->rule, observed)
-                       ? OCR_POLL_MATCHED : OCR_POLL_MISSED;
+        char joined[OCR_EVENT_TEXT];
+        joinMemberTexts(&sg->group, obs, s->regionCount,
+                        joined, sizeof(joined));
+        char *slot = claimTextSlot(s, joined);
+        appendEvent(ev, evCount, evCap, (int)gi, target,
+                    "rule_trigger", slot);
+        writeTimeline(s, "rule_trigger", (int)gi, slot, target);
 
-        // Seed failed for this region: the first successful read arms it
-        // with what is observed right now, so nothing can pre-trigger.
-        if (!rgn->state.armed) ocrRuleArm(&rgn->state, poll == OCR_POLL_MATCHED);
-
-        int target = -1;
-        if (ocrRuleStep(&rgn->state, &rgn->rule, poll, &target)) {
-            emitTrigger(s, (int)i, rgn, observed, target, ev, evCount, evCap);
+        // Same tick multiple groups fire: every group gets its
+        // rule_trigger row, only the first gets a loss_change event.
+        if (gearGroup < 0) {
+            gearGroup = (int)gi;
+            appendEvent(ev, evCount, evCap, (int)gi, target,
+                        "loss_change", NULL);
+            writeTimeline(s, "loss_change", (int)gi, NULL, target);
         }
     }
     return TRUE;

@@ -10,30 +10,41 @@
 #include "ocr_timeline.h"
 
 /*
- * Pure OCR session orchestration. One session drives N independent
- * regions/rules against one target window: a synchronous initial scan
- * arms every region, then repeated pumps capture, change-check, OCR and
- * step the rule state machines. Capture, OCR and the clock are injected
- * so the whole layer is testable without a window, a model or threads.
+ * Pure OCR session orchestration under the region/group model. One
+ * session drives G independent rule groups against one target window.
+ * Each physical region referenced by at least one group is captured and
+ * OCR'd at most once per tick; ocrGroupPoll synthesizes one AND-across-
+ * regions poll per group, then the group's edge state machine steps.
+ * A synchronous initial scan arms every group whose members are all
+ * readable (Start only needs one readable region overall). Capture, OCR
+ * and the clock are injected so the whole layer is testable without a
+ * window, a model or threads.
  */
 
-#define OCR_MAX_REGIONS       16
 #define OCR_THUMB_W           32
 #define OCR_THUMB_MAX_H       32
 #define OCR_EVENT_TEXT        256
 #define OCR_UNAVAILABLE_QUIET_MS 5000
 
+// Runtime state for one physical region (shared by every group that
+// references it). Only referenced regions are ever captured.
 typedef struct {
-    OcrRule       rule;
-    OcrRuleState  state;
+    NormRect      norm;
     unsigned char thumb[OCR_THUMB_W * OCR_THUMB_MAX_H];
     int           thumbW;
     int           thumbH;
     BOOL          hasThumb;
     char          lastText[OCR_EVENT_TEXT]; // reused when the change gate
     BOOL          hasLastText;              // skips OCR (spec §5/§6.4)
-    UINT64        lastUnavailableMs; // rate limit for unavailable events
-} OcrRegion;
+} OcrSessionRegion;
+
+// One group's definition plus its edge state machine and the per-group
+// capture_unavailable rate limit.
+typedef struct {
+    OcrGroup      group;
+    OcrRuleState  state;
+    UINT64        lastUnavailableMs;
+} OcrSessionGroup;
 
 typedef struct {
     int      intervalMs;    // poll period; worker clamps to >=200
@@ -41,8 +52,12 @@ typedef struct {
     int      madThreshold;
     CaptureWindow target;    // .hwnd drives captureFn
     OcrTimeline *timeline;   // NULL: timeline writes skipped
-    size_t   regionCount;
-    OcrRegion *regions;
+
+    size_t regionCount;
+    OcrSessionRegion *regions;
+    size_t groupCount;
+    OcrSessionGroup  *groups;
+    BOOL   referenced[OCR_MAX_REGIONS]; // union captured each tick
 
     // Injected points (tests pass fakes; production passes real ones).
     BOOL (*captureFn)(HWND, const RECT *, unsigned char **, int *, int *,
@@ -56,29 +71,32 @@ typedef struct {
     // destroyed/recycled HWND yields capture_unavailable, never OCR.
     BOOL (*targetAliveFn)(const CaptureWindow *target);
 
-    // Per-pump storage backing OcrSessionEvent.text (one slot per region
-    // trigger; reset at the start of every pump).
-    char evText[OCR_MAX_REGIONS][OCR_EVENT_TEXT];
+    // Per-pump storage backing OcrSessionEvent.text (one slot per firing
+    // group; reset at the start of every pump).
+    char evText[OCR_MAX_GROUPS][OCR_EVENT_TEXT];
     int  evTextNext;
 } OcrSession;
 
 typedef struct {
-    int         regionIndex;
+    int         groupIndex;
     int         lossPercent; // -1 when the event changes no gear
     const char *event;       // static name: rule_trigger / loss_change /
                              // capture_unavailable
-    const char *text;        // OCR text for rule_trigger, else NULL
+    const char *text;        // joined member text for rule_trigger, else NULL
 } OcrSessionEvent;
 
-// Synchronous per-region initial scan. Successfully read regions arm with
-// the observed polarity; failed regions stay unarmed and get armed by the
-// first successful pump (nothing can trigger before that). Returns FALSE
-// (with err) when no region could be read, so Start can refuse safely.
+// Synchronous initial scan over the referenced union. Each group whose
+// members all read successfully arms with the observed combined polarity;
+// partially readable groups stay unarmed and arm on the first pump where
+// every member is available. Returns FALSE (with err) only when no
+// referenced region could be read, so Start can refuse safely.
 BOOL ocrSessionSeed(OcrSession *s, char err[MSG_BUFSIZE]);
 
-// One scan of every region. Events are appended to ev starting at
-// *evCount, capped at evCap; *evCount is advanced. Capture/read failures
-// become rate-limited capture_unavailable events, never triggers.
+// One scan of the referenced union plus one step per group. Events are
+// appended to ev starting at *evCount, capped at evCap; *evCount is
+// advanced. Every firing group emits rule_trigger; the first firing group
+// in table order additionally emits loss_change (its gear wins). Capture
+// failures become rate-limited per-group capture_unavailable events.
 BOOL ocrSessionPump(OcrSession *s, OcrSessionEvent *ev, int *evCount,
                     int evCap);
 
