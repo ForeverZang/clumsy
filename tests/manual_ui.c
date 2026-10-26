@@ -14,6 +14,7 @@
 #include "ui_advanced.h"
 #if defined(CLUMSY_OCR)
 #include "ui_ocr.h"
+#include "ui_ocr_groups.h"
 #include "ui_picker.h"
 #endif
 
@@ -34,31 +35,21 @@ static const char *g_shotPath = NULL;
 static HDESK g_privateDesk = NULL;
 static BOOL g_mapped = FALSE;
 
-// Grab a window client into a 24-bit BMP. Used on a private desktop,
-// whose GDI surface renders even while the interactive desktop is
-// locked. redraw=FALSE skips the forced repaint (desktop grabs while a
-// layered overlay is up must not invalidate the whole screen).
-static void saveBmpFlags(HWND hwnd, const char *path, BOOL redraw) {
-    RECT rc;
-    int w, h, rowSize, imgSize, y;
-    HDC win, mem;
+// BitBlt a w x h rect off src DC (origin sx,sy) into a 24-bit BMP file.
+static void writeBmpFromDC(HDC src, int sx, int sy, int w, int h,
+                           const char *path) {
+    int rowSize, imgSize, y;
+    HDC mem;
     HBITMAP bmp;
     BITMAPFILEHEADER bf;
     BITMAPINFOHEADER bi;
     FILE *fp;
     unsigned char *pixels;
 
-    GetClientRect(hwnd, &rc);
-    w = rc.right; h = rc.bottom;
-    if (redraw) {
-        RedrawWindow(hwnd, NULL, NULL,
-                     RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
-    }
-    win = GetDC(hwnd);
-    mem = CreateCompatibleDC(win);
-    bmp = CreateCompatibleBitmap(win, w, h);
+    mem = CreateCompatibleDC(src);
+    bmp = CreateCompatibleBitmap(src, w, h);
     SelectObject(mem, bmp);
-    BitBlt(mem, 0, 0, w, h, win, 0, 0, SRCCOPY);
+    BitBlt(mem, 0, 0, w, h, src, sx, sy, SRCCOPY);
 
     memset(&bi, 0, sizeof(bi));
     bi.biSize = sizeof(bi);
@@ -71,7 +62,7 @@ static void saveBmpFlags(HWND hwnd, const char *path, BOOL redraw) {
     imgSize = rowSize * h;
     bi.biSizeImage = imgSize;
     pixels = (unsigned char *)malloc(imgSize);
-    if (!pixels) { ReleaseDC(hwnd, win); return; }
+    if (!pixels) { DeleteObject(bmp); DeleteDC(mem); return; }
     GetDIBits(mem, bmp, 0, h, pixels, (BITMAPINFO *)&bi, DIB_RGB_COLORS);
 
     fp = fopen(path, "wb");
@@ -85,16 +76,46 @@ static void saveBmpFlags(HWND hwnd, const char *path, BOOL redraw) {
         for (y = 0; y < h; y++)  /* GetDIBits already gave bottom-up rows */
             fwrite(pixels + y * rowSize, 1, rowSize, fp);
         fclose(fp);
-        printf("shot saved: %s (%dx%d)\n", path, w, h);
+        printf("shot saved: %s (%dx%d @%d,%d)\n", path, w, h, sx, sy);
     }
     free(pixels);
     DeleteObject(bmp);
     DeleteDC(mem);
+}
+
+// Grab a window client into a 24-bit BMP. Used on a private desktop,
+// whose GDI surface renders even while the interactive desktop is
+// locked. redraw=FALSE skips the forced repaint (desktop grabs while a
+// layered overlay is up must not invalidate the whole screen).
+static void saveBmpFlags(HWND hwnd, const char *path, BOOL redraw) {
+    RECT rc;
+    HDC win;
+    GetClientRect(hwnd, &rc);
+    if (redraw) {
+        RedrawWindow(hwnd, NULL, NULL,
+                     RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
+    }
+    win = GetDC(hwnd);
+    writeBmpFromDC(win, 0, 0, rc.right, rc.bottom, path);
     ReleaseDC(hwnd, win);
 }
 
 static void saveBmp(HWND hwnd, const char *path) {
     saveBmpFlags(hwnd, path, TRUE);
+}
+
+// Layered (UpdateLayeredWindow) surfaces have no classic window DC:
+// BitBlt from GetDC(hwnd) returns black. Grab the composited screen at
+// the window's rect instead (interactive desktop only; on a private
+// desktop the screen DC does not composite).
+static void saveScreenGrab(HWND hwnd, const char *path) {
+    RECT rc;
+    HDC screen;
+    if (!GetWindowRect(hwnd, &rc)) return;
+    screen = GetDC(NULL);
+    writeBmpFromDC(screen, rc.left, rc.top,
+                   rc.right - rc.left, rc.bottom - rc.top, path);
+    ReleaseDC(NULL, screen);
 }
 
 static int noop(Ihandle *ih) { (void)ih; return IUP_DEFAULT; }
@@ -482,17 +503,19 @@ static void setupOcr(BOOL expanded) {
     }
 }
 
-// --- pickwindow / picklist / pickrect headless flows -------------------
+// --- pickwindow / pickrect headless flows ------------------------------
 //
 // clumsy only enumerates windows of processes that own network
 // endpoints (procmap), so these modes bind a throwaway UDP socket and
-// pick THIS harness process: its main dialog is the unique top-level
-// window. picklist adds a second visible window to force the modal
-// IupList; pickrect then drives the rubber band through test seams.
+// pick THIS harness process: its main IUP dialog is the unique visible
+// top-level window and auto-locks straight into DRAG. A timer then
+// paints one band and presses Done through test seams while the
+// overlay's modal loop runs. Multi-window FRAME hover/click has no seam
+// surface and belongs to the Task 7 physical checklist.
 static char g_pickExe[128] = "";
 static const char *g_overlayShot = NULL;
 static SOCKET g_udpSocket = INVALID_SOCKET;
-static HWND g_extraWin = NULL;
+static CaptureWindow g_pickWin;
 
 static void ownExeName(char *buf, size_t cap) {
     char path[MAX_PATH];
@@ -520,13 +543,6 @@ static void bindUdpEndpoint(void) {
     }
 }
 
-static HWND createExtraWindow(void) {
-    return CreateWindowExW(WS_EX_APPWINDOW, L"Static",
-        L"QA Fixture 二号窗口 (stand-in)",
-        WS_OVERLAPPEDWINDOW | WS_VISIBLE,
-        120, 120, 360, 220, NULL, NULL, GetModuleHandleW(NULL), NULL);
-}
-
 static void setupPickerOcr(void) {
     OcrConfig cfg;
     memset(&cfg, 0, sizeof(cfg));
@@ -538,93 +554,109 @@ static void setupPickerOcr(void) {
     uiOcrPopulate(&cfg);
 }
 
-// Fires while uiPickerPickRect's nested loop is open: paint a band in
-// the lower dialog area, optionally grab the screen, then accept.
+// Fires while the DRAG overlay is open (the unique fixture window
+// auto-locked): paint a band in the lower client, optionally grab the
+// overlay itself, commit the rect and finish the modal. The locked
+// window is this harness's own main dialog in both picker modes.
 static int dragSimCb(Ihandle *ih) {
-    HWND dh = (HWND)(INT_PTR)IupGetAttribute(dialog, "HWND");
     RECT rc;
     POINT a, b;
+    HWND ov;
+    HWND target = (HWND)(INT_PTR)IupGetAttribute(dialog, "HWND");
     IupSetAttribute(ih, "RUN", "NO");
-    if (dh == NULL || !GetClientRect(dh, &rc)) return IUP_DEFAULT;
-    a.x = rc.right * 10 / 100;  a.y = rc.bottom * 78 / 100;
-    b.x = rc.right * 62 / 100;  b.y = rc.bottom * 90 / 100;
-    ClientToScreen(dh, &a);
-    ClientToScreen(dh, &b);
-    uiPickerSetDragForTest(a, b);
-    // Grab the overlay canvas itself: on a non-active private desktop
-    // the desktop DC does not composite, but per-window DCs render.
-    if (g_overlayShot != NULL) {
-        HWND ov = uiPickerOverlayHwndForTest();
-        if (ov != NULL) saveBmpFlags(ov, g_overlayShot, FALSE);
+    if (target == NULL || !GetClientRect(target, &rc)) {
+        printf("picker: locked window unavailable\n");
+        return IUP_DEFAULT;
     }
+    a.x = rc.right * 10 / 100;  a.y = rc.bottom * 55 / 100;
+    b.x = rc.right * 62 / 100;  b.y = rc.bottom * 80 / 100;
+    ClientToScreen(target, &a);
+    ClientToScreen(target, &b);
+    uiPickerSetDragForTest(a, b);
+    // Per-window grab: on a non-active private desktop the desktop DC
+    // does not composite, but per-window DCs render.
+    ov = uiPickerOverlayHwndForTest();
+    if (g_overlayShot != NULL && ov != NULL)
+        saveScreenGrab(ov, g_overlayShot);
     if (!uiPickerCompleteDragForTest())
-        printf("pickrect: simulated drag rejected\n");
+        printf("picker: simulated drag rejected\n");
+    if (uiPickerFinishForTest() != UI_PICKER_OK)
+        printf("picker: finish rejected\n");
     return IUP_DEFAULT;
+}
+
+// Mirrors commitPickResult() in ui_ocr.c: the HWND plus only this
+// session's new rects (everything past existingCount) become model state.
+static void commitPickerSession(const CaptureWindow *win,
+                                const NormRect *rects,
+                                size_t existingCount, size_t total) {
+    size_t i;
+    uiOcrSetPickedWindow(win);
+    for (i = existingCount; i < total; i++)
+        (void)uiOcrAddRegionForTest(&rects[i]);
+    fitDialogLive();
+    IupUpdate(dialog);
 }
 
 static int pickerFlowCb(Ihandle *ih) {
-    CaptureWindow win;
+    CaptureWindow picked;
+    NormRect rects[OCR_MAX_REGIONS];
+    const NormRect *existing = NULL;
+    const CaptureWindow *initial = NULL;
+    size_t existingCount = 0;
+    size_t total = 0;
+    BOOL startFrame = TRUE;
+    BOOL hadWindow = FALSE;
+    UiPickerResult r;
+    Ihandle *dragTimer;
     IupSetAttribute(ih, "RUN", "NO");
-    // Same production entry point as the "Choose window" button:
-    // unique window picks directly, two windows open the modal chooser
-    // (dismissed by pickerAcceptCb in picklist mode).
-    if (!uiOcrChooseWindow(&win)) {
-        printf("pickwindow: cancelled or no windows for %s\n", g_pickExe);
-        return IUP_DEFAULT;
-    }
-    printf("pickwindow: picked hwnd=%p title=%s\n",
-           (void *)win.hwnd, win.title);
-    uiOcrSetPickedWindow(&win);
-    fitDialogLive();
-    IupUpdate(dialog);
 
-    if (strcmp(g_mode, "pickrect") != 0) return IUP_DEFAULT;
-    {
-        NormRect norm;
-        Ihandle *dragTimer = IupTimer();
-        IupSetAttribute(dragTimer, "TIME", "700");
-        IupSetCallback(dragTimer, "ACTION_CB", (Icallback)dragSimCb);
-        IupSetAttribute(dragTimer, "RUN", "YES");
-        if (!uiPickerPickRect(win.hwnd, &norm)) {
-            printf("pickrect: cancelled\n");
+    if (strcmp(g_mode, "pickrect") == 0) {
+        // "+ 添加区域" entry: the window is pre-picked and the overlay
+        // opens directly in DRAG on it.
+        if (!uiOcrChooseWindow(&g_pickWin)) {
+            printf("pickrect: no unique window to seed\n");
             return IUP_DEFAULT;
         }
-        printf("pickrect: norm=%.3f,%.3f,%.3f,%.3f\n",
-               norm.x, norm.y, norm.w, norm.h);
-        if (uiOcrAddRegionForTest(&norm)) {
-            fitDialogLive();
-            IupUpdate(dialog);
-        }
+        uiOcrSetPickedWindow(&g_pickWin);
+        fitDialogLive();
+        IupUpdate(dialog);
+        existing = uiOcrGroupsRegionRects(&existingCount);
+        startFrame = FALSE;
+        hadWindow = TRUE;
+        initial = &g_pickWin;
     }
-    return IUP_DEFAULT;
-}
 
-// picklist: grab the open chooser, then close it with OK.
-static int pickerAcceptCb(Ihandle *ih) {
-    IupSetAttribute(ih, "RUN", "NO");
-    if (g_overlayShot != NULL) {
-        HWND ch = uiPickerChooserHwndForTest();
-        if (ch != NULL) saveBmpFlags(ch, g_overlayShot, FALSE);
+    // Registered before the modal call: IupPopup runs a nested loop that
+    // dispatches IupTimers, so the band gets drawn while the overlay is up.
+    dragTimer = IupTimer();
+    IupSetAttribute(dragTimer, "TIME", "700");
+    IupSetCallback(dragTimer, "ACTION_CB", (Icallback)dragSimCb);
+    IupSetAttribute(dragTimer, "RUN", "YES");
+
+    r = uiPickerPick(g_pickExe, startFrame, hadWindow, initial,
+                     existing, existingCount, &picked, rects, &total);
+    if (r == UI_PICKER_CANCEL) {
+        printf("%s: cancelled\n", g_mode);
+        return IUP_DEFAULT;
     }
-    uiPickerAcceptChooserForTest();
+    if (r == UI_PICKER_WINDOW_DIED) {
+        printf("%s: target window died during selection\n", g_mode);
+        return IUP_DEFAULT;
+    }
+    printf("%s: picked hwnd=%p title=\"%s\" regions=%u\n", g_mode,
+           (void *)picked.hwnd, picked.title, (unsigned)total);
+    commitPickerSession(&picked, rects, existingCount, total);
     return IUP_DEFAULT;
 }
 
 static BOOL isPickerMode(const char *m) {
     return strcmp(m, "pickwindow") == 0
-        || strcmp(m, "picklist") == 0
         || strcmp(m, "pickrect") == 0;
 }
 
 static void startPickerTimers(void) {
-    Ihandle *flow;
-    if (strcmp(g_mode, "picklist") == 0) {
-        Ihandle *accept = IupTimer();
-        IupSetAttribute(accept, "TIME", "1100");
-        IupSetCallback(accept, "ACTION_CB", (Icallback)pickerAcceptCb);
-        IupSetAttribute(accept, "RUN", "YES");
-    }
-    flow = IupTimer();
+    Ihandle *flow = IupTimer();
     IupSetAttribute(flow, "TIME", "500");
     IupSetCallback(flow, "ACTION_CB", (Icallback)pickerFlowCb);
     IupSetAttribute(flow, "RUN", "YES");
@@ -733,10 +765,8 @@ int main(int argc, char **argv) {
     fitDialogLive();
 
 #if defined(CLUMSY_OCR)
-    if (isPickerMode(g_mode)) {
-        if (strcmp(g_mode, "picklist") == 0) g_extraWin = createExtraWindow();
+    if (isPickerMode(g_mode))
         startPickerTimers();
-    }
 #endif
 
     if (strcmp(g_mode, "run") == 0 || strcmp(g_mode, "runadv") == 0) {

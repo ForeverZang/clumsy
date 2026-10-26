@@ -44,10 +44,11 @@ BOOL uiOcrGetConfig(OcrConfig *out);
 // The app context set via uiOcrSetAppContext is never overwritten.
 BOOL uiOcrPopulate(const OcrConfig *cfg);
 
-// Task 9: pick the target window off the screen. Zero visible windows ->
-// FALSE and the inline "no windows" error; one -> picked directly;
-// several -> modal IupList chooser (FALSE = user cancel). Refuses while
-// running or without an app context.
+// Headless/test policy used by callers that do not run the overlay:
+// zero visible windows -> FALSE with the inline "no windows" error,
+// one -> picked directly, several -> FALSE (the production buttons run
+// uiPickerPick's FRAME overlay instead). Refuses while running or
+// without an app context.
 BOOL uiOcrChooseWindow(CaptureWindow *out);
 
 // Task 9: session-local hand-picked window overrides the saved title.

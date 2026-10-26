@@ -757,6 +757,38 @@ int main(void) {
                 DestroyWindow(target);
             }
 
+            // Ownership re-check before FRAME lock (Review Focus #1):
+            // a live visible window owned by the pinned pid passes;
+            // pid 0 (impossible owner) fails; after DestroyWindow the
+            // recycled-or-dead handle fails closed.
+            {
+                HWND own = CreateWindowExW(WS_EX_APPWINDOW, L"Static",
+                    L"ownership fixture",
+                    WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+                    220, 220, 360, 240, NULL, NULL,
+                    GetModuleHandleW(NULL), NULL);
+                assert(own != NULL);
+                assert(uiPickerWindowStillOwned(own,
+                                                GetCurrentProcessId()));
+                assert(!uiPickerWindowStillOwned(own, 0));
+                DestroyWindow(own);
+                assert(!uiPickerWindowStillOwned(own,
+                                                 GetCurrentProcessId()));
+            }
+
+            // Overlay parameter gates must never open a window: a
+            // direct-DRAG entry without an initial window is a caller
+            // bug and returns CANCEL headless.
+            {
+                CaptureWindow pickWin;
+                NormRect pickRects[OCR_MAX_REGIONS];
+                size_t pickN = 0;
+                assert(uiPickerPick("no_such_app_xyz.exe", FALSE, TRUE,
+                                    NULL, NULL, 0, &pickWin,
+                                    pickRects, &pickN)
+                       == UI_PICKER_CANCEL);
+            }
+
             // Choose policy without UI: one visible top-level window is
             // picked directly (no modal); an app with zero windows fails.
             // procmap only lists endpoint-owning processes, so bind a
@@ -796,8 +828,32 @@ int main(void) {
                 assert(cw.height == ur.bottom);
                 assert(strcmp(cw.title, "choose direct window") == 0);
 
+                // n>1 policy: the modal list chooser is deleted; the
+                // headless policy only resolves 0/1 windows and returns
+                // FALSE for several (the button uses uiPickerPick).
+                {
+                    HWND second = CreateWindowExW(WS_EX_APPWINDOW,
+                        L"Static", L"choose second window",
+                        WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+                        240, 240, 360, 240, NULL, NULL,
+                        GetModuleHandleW(NULL), NULL);
+                    assert(second != NULL);
+                    assert(!uiOcrChooseWindow(&cw));
+                    DestroyWindow(second);
+                }
+
                 uiOcrSetAppContext("no_such_app_xyz.exe");
                 assert(!uiOcrChooseWindow(&cw));
+                // Zero enumerated windows never enters the overlay.
+                {
+                    CaptureWindow pickWin;
+                    NormRect pickRects[OCR_MAX_REGIONS];
+                    size_t pickN = 0;
+                    assert(uiPickerPick("no_such_app_xyz.exe", TRUE,
+                                        FALSE, NULL, NULL, 0,
+                                        &pickWin, pickRects, &pickN)
+                           == UI_PICKER_CANCEL);
+                }
 
                 DestroyWindow(unique);
                 closesocket(udp);

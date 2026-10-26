@@ -3,43 +3,66 @@
 
 #include "common.h"
 #include "ocr_capture.h" // CaptureWindow
-#include "ocr_rules.h"   // NormRect
+#include "ocr_rules.h"   // NormRect, OCR_MAX_REGIONS
 
 /*
- * Modal target-window chooser and in-window region rubber band for
- * section ⑤. Both dialogs are UI-thread, one-at-a-time modals.
+ * WeChat-style window/region picker for section ⑤: one full-screen
+ * modal overlay with two phases. FRAME highlights the hovered visible
+ * top-level window of the target app (a single candidate auto-locks);
+ * DRAG keeps the locked window bright and lets the user rubber-band
+ * several OCR regions, undo them, reselect the window, cancel, or
+ * finish. HWND and rects are written out only on finish, so cancel and
+ * reselect leave previously picked state untouched.
  *
  * The whole implementation compiles to no-op stubs when CLUMSY_OCR is
  * not defined (build.zig); main.c guards its call sites the same way.
  */
 
-// Modal IupList of the app's visible top-level windows (title + size).
-// Returns FALSE when the user cancels; the caller distinguishes "no
-// windows" beforehand with captureEnumWindowsForApp and shows the
-// inline error itself.
-BOOL uiPickerPickWindow(const char *exeName, CaptureWindow *out);
+typedef enum {
+    UI_PICKER_OK = 0,          // outWindow/outRects hold the commit
+    UI_PICKER_CANCEL = 1,      // Esc / right-click in FRAME / cancel
+    UI_PICKER_WINDOW_DIED = 2  // the locked window closed or minimized
+} UiPickerResult;
 
-// Semi-transparent topmost overlay over the target window's monitor
-// work area; the user drags a rectangle (right-click / ESC cancels).
-// On success *out is the drag rect as client-area fractions. FALSE on
-// cancel or an uncapturable target.
-BOOL uiPickerPickRect(HWND target, NormRect *out);
+// Run the overlay.
+//   startFrame=TRUE   enter FRAME (the "选择窗口…" entry); FALSE skips
+//                     straight into DRAG on initialWindow ("+ 添加区域").
+//   hadWindow         FALSE on the very first pick: finishing needs at
+//                     least one newly dragged region.
+//   initialWindow     required when startFrame is FALSE.
+//   existing/count    regions configured before the session; they are
+//                     shown (orange) and always kept.
+// On OK *outWindow is the locked window (freshly enumerated) and
+// *outRects receives ALL regions (existing followed by this session's);
+// the caller tells new ones apart by count > existingCount. Output
+// arrays must hold OCR_MAX_REGIONS entries.
+UiPickerResult uiPickerPick(const char *exeName,
+                            BOOL startFrame,
+                            BOOL hadWindow,
+                            const CaptureWindow *initialWindow,
+                            const NormRect *existing, size_t existingCount,
+                            CaptureWindow *outWindow,
+                            NormRect *outRects, size_t *outRectCount);
 
-// Pure geometry behind the overlay, split out for unit tests: order the
-// two screen points, map them into the target's client area, clamp to
-// its client rect, refuse a drag smaller than minPixels on a side, and
-// write normalized fractions.
+// Ownership re-validation right before a FRAME click locks a window:
+// the HWND must still exist, be visible and not minimized, and still be
+// owned by the pid captured at enumeration. Fails closed on NULL/0.
+BOOL uiPickerWindowStillOwned(HWND hwnd, DWORD pid);
+
+// Pure geometry behind DRAG: order the two screen points, map them into
+// the target's client area, clamp to its client rect, refuse a drag
+// smaller than minPixels on a side, and write normalized fractions.
 BOOL uiPickerDragToNorm(HWND target, POINT screenA, POINT screenB,
                         int minPixels, NormRect *out);
 
-// Test seams driving the UI-thread modals from a timer while IupPopup
-// runs its nested loop. No-ops when the matching dialog is not open.
-void uiPickerAcceptChooserForTest(void);
+// Test seams driving the overlay from a timer while its modal loop runs.
+// SetDrag paints a pending band; CompleteDrag runs the same release
+// path the mouse uses (clamp + machine AddRect); Finish activates Done.
 void uiPickerSetDragForTest(POINT screenA, POINT screenB);
 BOOL uiPickerCompleteDragForTest(void);
-// Native HWND of the open modal (chooser dialog / rubber-band canvas)
-// for headless per-window grabs; NULL when the modal is not open.
-HWND uiPickerChooserHwndForTest(void);
+UiPickerResult uiPickerFinishForTest(void);
+// Native HWND of the full-screen overlay for headless per-window grabs;
+// NULL when the overlay is not open.
 HWND uiPickerOverlayHwndForTest(void);
 
 #endif // CLUMSY_UI_PICKER_H

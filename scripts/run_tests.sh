@@ -42,7 +42,8 @@ srcs_for() {
         picker_state)   SRC="src/ui_picker_state.c" ;;
         ui_simple)      SRC="src/ui_simple.c src/ui_ocr.c src/ui_ocr_groups.c \
                          src/ui_ocr_group_editor.c \
-                         src/ui_ocr_log.c src/ui_picker.c src/ocr_app.c \
+                         src/ui_ocr_log.c src/ui_picker.c src/ui_picker_state.c \
+                         src/ocr_app.c \
                          src/ocr_glue.c src/ocr_engine.c src/ocr_session.c \
                          src/ocr_worker.c src/ocr_timeline.c \
                          src/ocr_config.c src/ocr_rules.c src/ocr_capture.c \

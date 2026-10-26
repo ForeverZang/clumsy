@@ -148,10 +148,9 @@ static int enableCb(Ihandle *ih, int state) {
     return IUP_DEFAULT;
 }
 
-// Enumerate the selected app's visible top-level windows: zero ->
-// inline error (the user fixes the app choice); one -> picked directly;
-// several -> modal IupList chooser. Shared by the button and the
-// headless acceptance harness.
+// Headless 0/1 window policy shared with the acceptance harness: zero
+// -> inline error, one -> picked directly. Several windows return FALSE
+// here; the production buttons use the WeChat-style FRAME overlay.
 BOOL uiOcrChooseWindow(CaptureWindow *out) {
     CaptureWindow wins[32];
     int n;
@@ -167,38 +166,80 @@ BOOL uiOcrChooseWindow(CaptureWindow *out) {
         *out = wins[0];
         return TRUE;
     }
-    return uiPickerPickWindow(g_appExe, out); // FALSE = user cancel
+    return FALSE;
+}
+
+// Apply an OK overlay result: commit the locked window (even with zero
+// new regions, so "选择窗口…" can re-point at another window) and append
+// only this session's rects.
+static void commitPickResult(const CaptureWindow *win,
+                             const NormRect *rects,
+                             size_t existingCount, size_t total) {
+    uiOcrSetPickedWindow(win);
+    if (total > existingCount)
+        uiOcrGroupsAppendRegions(rects + existingCount,
+                                 total - existingCount);
+    showErrorText("");
+    if (g_uiMapped && g_layoutChanged != NULL) g_layoutChanged();
 }
 
 static int chooseWindowCb(Ihandle *ih) {
-    CaptureWindow picked;
+    CaptureWindow wins[32], picked;
+    NormRect rects[OCR_MAX_REGIONS];
+    const NormRect *existing;
+    size_t existingCount = 0, total = 0;
+    int n;
+    UiPickerResult r;
     UNREFERENCED_PARAMETER(ih);
-    if (!uiOcrChooseWindow(&picked)) return IUP_DEFAULT;
-    uiOcrSetPickedWindow(&picked);
-    showErrorText("");
+
+    if (g_running || g_appExe[0] == '\0') return IUP_DEFAULT;
+    n = captureEnumWindowsForApp(g_appExe, wins, 32);
+    if (n <= 0) {
+        uiOcrShowError("ocr.error.noWindows");
+        return IUP_DEFAULT;
+    }
+    existing = uiOcrGroupsRegionRects(&existingCount);
+    r = uiPickerPick(g_appExe, TRUE, g_hasPicked,
+                     g_hasPicked ? &g_pickedWindow : NULL,
+                     existing, existingCount,
+                     &picked, rects, &total);
+    if (r == UI_PICKER_CANCEL) return IUP_DEFAULT;
+    if (r == UI_PICKER_WINDOW_DIED) {
+        uiOcrSetPickedWindow(NULL);
+        uiOcrShowError("ocr.error.windowDied");
+        return IUP_DEFAULT;
+    }
+    commitPickResult(&picked, rects, existingCount, total);
     return IUP_DEFAULT;
 }
 
-// "Add region": rubber-band on the picked window, then append a region
-// to the table's model (groups are built separately via New group). The
-// button is disabled without a picked window, so the guards only defend
-// against stale windows.
+// "+ 添加区域": skip FRAME and rubber-band directly on the picked
+// window; the model's existing rects show orange and survive cancel.
 static int addRegionCb(Ihandle *ih) {
-    NormRect norm;
+    CaptureWindow picked;
+    NormRect rects[OCR_MAX_REGIONS];
+    const NormRect *existing;
+    size_t existingCount = 0, total = 0;
+    UiPickerResult r;
     UNREFERENCED_PARAMETER(ih);
+
     if (g_running || !g_hasPicked || g_pickedHwnd == NULL) return IUP_DEFAULT;
+    if (g_appExe[0] == '\0') return IUP_DEFAULT;
     if (!captureIsCapturable(g_pickedHwnd)) {
         uiOcrShowError("ocr.error.windowStale");
         return IUP_DEFAULT;
     }
-    // FALSE covers user cancel (ESC / right-click) and an undersized drag
-    // (the overlay lets the user try again, so it simply returns there).
-    if (!uiPickerPickRect(g_pickedHwnd, &norm)) return IUP_DEFAULT;
-    if (!uiOcrGroupsAppendRegions(&norm, 1)) return IUP_DEFAULT;
-    showErrorText("");
-    // The tables are fixed-height, but keep the single host refit path
-    // consistent with every other post-map body change.
-    if (g_uiMapped && g_layoutChanged != NULL) g_layoutChanged();
+    existing = uiOcrGroupsRegionRects(&existingCount);
+    r = uiPickerPick(g_appExe, FALSE, TRUE, &g_pickedWindow,
+                     existing, existingCount,
+                     &picked, rects, &total);
+    if (r == UI_PICKER_CANCEL) return IUP_DEFAULT;
+    if (r == UI_PICKER_WINDOW_DIED) {
+        uiOcrSetPickedWindow(NULL);
+        uiOcrShowError("ocr.error.windowDied");
+        return IUP_DEFAULT;
+    }
+    commitPickResult(&picked, rects, existingCount, total);
     return IUP_DEFAULT;
 }
 
