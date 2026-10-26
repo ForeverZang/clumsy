@@ -311,6 +311,11 @@ BOOL ocrConfigLoad(const char *path, OcrConfig *out, char err[MSG_BUFSIZE]) {
         if (err) strncpy(err, "bad ocrConfigLoad arguments", MSG_BUFSIZE - 1);
         return FALSE;
     }
+    // The loader owns a fully defined output: production passes a stack
+    // struct (ocr_glue), and a comment-only/partial file must leave zero
+    // counts rather than garbage that the compaction loop would walk OOB.
+    memset(out, 0, sizeof(*out));
+
     FILE *f = fopen(path, "rb");
     if (!f) {
         if (err) {

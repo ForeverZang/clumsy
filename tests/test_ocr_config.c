@@ -11,11 +11,12 @@
 
 #include "ocr_config.h"
 
-#define CFG_PATH   "build/tests/t_ocr_config.txt"
-#define CFG_BAD    "build/tests/t_ocr_config_bad.txt"
-#define CFG_MISS   "build/tests/t_ocr_config_missing.txt"
-#define CFG_LEGACY "build/tests/t_ocr_config_legacy.txt"
-#define CFG_RESAVE "build/tests/t_ocr_config_resave.txt"
+#define CFG_PATH    "build/tests/t_ocr_config.txt"
+#define CFG_BAD     "build/tests/t_ocr_config_bad.txt"
+#define CFG_MISS    "build/tests/t_ocr_config_missing.txt"
+#define CFG_LEGACY  "build/tests/t_ocr_config_legacy.txt"
+#define CFG_RESAVE  "build/tests/t_ocr_config_resave.txt"
+#define CFG_PARTIAL "build/tests/t_ocr_config_partial.txt"
 
 static void putRegion(OcrConfig *cfg, size_t i, const char *name,
                       double x, double y, double w, double h) {
@@ -273,6 +274,36 @@ static void test_corrupt_lines_tolerated(void) {
     remove(CFG_BAD);
 }
 
+// Production calls ocrConfigLoad with the struct on the stack; the
+// loader owns zeroing its output so a comment-only / partial saved file
+// can never drive garbage groupCount into the compaction loop (stack
+// out-of-bounds read/write).
+static void test_load_zeroes_partial_file(void) {
+    FILE *f = fopen(CFG_PARTIAL, "wb");
+    assert(f);
+    fputs("# heading comment\n"
+          "\n"
+          "enabled=1\n",
+          f);
+    fclose(f);
+
+    OcrConfig cfg;
+    memset(&cfg, 0xAA, sizeof(cfg)); // poisoned, like uninitialized stack
+    char err[MSG_BUFSIZE];
+    assert(ocrConfigLoad(CFG_PARTIAL, &cfg, err));
+    assert(cfg.enabled == TRUE);
+    assert(cfg.changeDetect == FALSE);
+    assert(cfg.regionCount == 0);
+    assert(cfg.groupCount == 0);
+    assert(cfg.intervalMs == 0);
+    assert(cfg.exeName[0] == '\0');
+    assert(cfg.groups[0].memberCount == 0);
+    assert(cfg.groups[OCR_CONFIG_GROUPS_MAX - 1]
+               .members[OCR_MAX_REGIONS - 1].regionIndex == -1);
+
+    remove(CFG_PARTIAL);
+}
+
 static void test_missing_file(void) {
     remove(CFG_MISS);
     OcrConfig cfg;
@@ -394,6 +425,7 @@ int main(void) {
     test_roundtrip();
     test_legacy_migration();
     test_corrupt_lines_tolerated();
+    test_load_zeroes_partial_file();
     test_missing_file();
     test_validate();
     printf("OK: ocr_config\n");

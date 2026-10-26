@@ -38,8 +38,9 @@ typedef struct {
     OcrGroup     groups[OCR_CONFIG_GROUPS_MAX];
 } OcrConfig;
 
-// Fill a zeroed OcrConfig from path. Missing file and open errors return
-// FALSE with an English err; malformed individual lines are skipped.
+// Zero *out, then fill it from path. Missing file and open errors return
+// FALSE with an English err; malformed individual lines are skipped;
+// an absent key leaves a defined zero/false value, never stack garbage.
 BOOL ocrConfigLoad(const char *path, OcrConfig *out, char err[MSG_BUFSIZE]);
 
 // Write the full configuration (UTF-8, CRLF tolerated by the parser).
