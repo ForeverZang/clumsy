@@ -24,7 +24,7 @@ Module* modules[MODULE_CNT] = {
 BOOL parameterized = FALSE;
 volatile short sendState = SEND_STATUS_NONE;
 
-static Ihandle *dialog, *vbox, *holderBox, *headerBox, *langRow;
+static Ihandle *dialog, *vbox, *holderBox, *headerBox;
 static Ihandle *simpleBox, *advancedBox, *activePage;
 static Ihandle *basicTabBtn, *advTabBtn;
 static Ihandle *zhBtn, *enBtn;
@@ -678,7 +678,8 @@ int main(int argc, char **argv) {
     }
 #endif
 
-    // Tab header row (custom; IupTabs cannot size per visible page).
+    // One header row (mirrors main.c): tabs flush-left, language flush-right,
+    // all 26px tall so edges and baseline align.
     basicTabBtn = IupFlatButton(NULL);
     advTabBtn = IupFlatButton(NULL);
     i18nBind(basicTabBtn, "TITLE", "tab.basic");
@@ -687,23 +688,22 @@ int main(int argc, char **argv) {
     IupSetCallback(advTabBtn, "FLAT_ACTION", (Icallback)advTabCb);
     IupSetAttribute(basicTabBtn, "RASTERSIZE", "96x26");
     IupSetAttribute(advTabBtn, "RASTERSIZE", "96x26");
-    headerBox = IupHbox(basicTabBtn, advTabBtn, IupFill(), NULL);
-    IupSetAttribute(headerBox, "GAP", "2");
 
     zhBtn = IupFlatButton("中");
     enBtn = IupFlatButton("EN");
     IupSetCallback(zhBtn, "FLAT_ACTION", (Icallback)noop);
     IupSetCallback(enBtn, "FLAT_ACTION", (Icallback)noop);
-    IupSetAttribute(zhBtn, "RASTERSIZE", "36x22");
-    IupSetAttribute(enBtn, "RASTERSIZE", "40x22");
+    IupSetAttribute(zhBtn, "RASTERSIZE", "36x26");
+    IupSetAttribute(enBtn, "RASTERSIZE", "40x26");
     syncLangButtons();
-    langRow = IupHbox(IupFill(), zhBtn, enBtn, NULL);
-    IupSetAttribute(langRow, "GAP", "4");
+
+    headerBox = IupHbox(basicTabBtn, advTabBtn, IupFill(), zhBtn, enBtn, NULL);
+    IupSetAttribute(headerBox, "GAP", "4");
 
     // Both pages are mounted permanently; selectTab only flips VISIBLE
     // and pins the holder to the active page's natural size.
     holderBox = IupVbox(simpleBox, advancedBox, NULL);
-    vbox = IupVbox(langRow, headerBox, holderBox, NULL);
+    vbox = IupVbox(headerBox, holderBox, NULL);
 
     dialog = IupDialog(vbox);
     IupSetCallback(dialog, "SHOW_CB", (Icallback)showCb);

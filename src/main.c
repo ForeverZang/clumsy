@@ -34,7 +34,7 @@ BOOL parameterized = 0; // reading args from command line
 
 // global iup handlers
 static Ihandle *dialog, *dialogVBox, *iconTimer;
-static Ihandle *simpleBox, *advancedBox, *tabHolder, *headerBox, *langRow;
+static Ihandle *simpleBox, *advancedBox, *tabHolder, *headerBox;
 static Ihandle *basicTabBtn, *advTabBtn;
 static Ihandle *zhBtn, *enBtn;
 static Ihandle *timeoutTimer = NULL;
@@ -425,7 +425,9 @@ void init(int argc, char* argv[]) {
     }
 #endif
 
-    // Custom tab headers directly under the language row: basic is default.
+    // One header row: tab headers flush-left, language switch flush-right,
+    // all controls the same 26px height so their edges and text baseline
+    // align. Basic is the default tab.
     basicTabBtn = IupFlatButton(NULL);
     advTabBtn = IupFlatButton(NULL);
     i18nBind(basicTabBtn, "TITLE", "tab.basic");
@@ -434,28 +436,26 @@ void init(int argc, char* argv[]) {
     IupSetCallback(advTabBtn, "FLAT_ACTION", (Icallback)advTabCb);
     IupSetAttribute(basicTabBtn, "RASTERSIZE", "96x26");
     IupSetAttribute(advTabBtn, "RASTERSIZE", "96x26");
-    headerBox = IupHbox(basicTabBtn, advTabBtn, IupFill(), NULL);
-    IupSetAttribute(headerBox, "GAP", "2");
 
-    // Language switch lives at the window's top-right; the active language
-    // reads as a pressed/selected button.
+    // The active language reads as a pressed/selected button.
     zhBtn = IupFlatButton("中");
     enBtn = IupFlatButton("EN");
     IupSetCallback(zhBtn, "FLAT_ACTION", (Icallback)languageCb);
     IupSetCallback(enBtn, "FLAT_ACTION", (Icallback)languageCb);
     IupSetInt(zhBtn, "LANGID", LANG_ZH);
     IupSetInt(enBtn, "LANGID", LANG_EN);
-    IupSetAttribute(zhBtn, "RASTERSIZE", "36x22");
-    IupSetAttribute(enBtn, "RASTERSIZE", "40x22");
+    IupSetAttribute(zhBtn, "RASTERSIZE", "36x26");
+    IupSetAttribute(enBtn, "RASTERSIZE", "40x26");
     syncLangButtons();
-    langRow = IupHbox(IupFill(), zhBtn, enBtn, NULL);
-    IupSetAttribute(langRow, "GAP", "4");
+
+    headerBox = IupHbox(basicTabBtn, advTabBtn, IupFill(), zhBtn, enBtn, NULL);
+    IupSetAttribute(headerBox, "GAP", "4");
 
     // Both pages are permanent children; selectTab only flips VISIBLE and
     // FLOATING, so native control state survives every tab round trip.
     tabHolder = IupVbox(simpleBox, advancedBox, NULL);
     IupSetAttribute(tabHolder, "EXPAND", "YES");
-    dialogVBox = IupVbox(langRow, headerBox, tabHolder, NULL);
+    dialogVBox = IupVbox(headerBox, tabHolder, NULL);
 
     dialog = IupDialog(dialogVBox);
     snprintf(dialogTitle, sizeof(dialogTitle), "%s v%s",
