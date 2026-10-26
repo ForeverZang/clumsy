@@ -707,7 +707,7 @@ int main(int argc, char **argv) {
 
     dialog = IupDialog(vbox);
     IupSetCallback(dialog, "SHOW_CB", (Icallback)showCb);
-    IupSetAttribute(dialog, "TITLE", "游戏流量控制器 v0.3");
+    IupSetAttribute(dialog, "TITLE", "游戏流量控制器 v0.3.1");
     IupSetAttribute(dialog, "RASTERSIZE", "500x600");
     IupSetAttribute(dialog, "RESIZE", "NO");
     IupSetAttribute(vbox, "ALIGNMENT", "ALEFT");
