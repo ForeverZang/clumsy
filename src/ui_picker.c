@@ -380,13 +380,16 @@ static void finishPick(UiPickerResult r) {
     if (g_ov.bar != NULL) IupHide(g_ov.bar);
 }
 
-// Every DRAG action re-validates the locked window; the 300ms timer is
-// the backstop for a death with no further input.
+// Every DRAG action re-validates the locked window's OWNERSHIP, not just
+// its liveness: the HWND may have been destroyed and its value recycled
+// onto another process. The 300ms timer is the input-free backstop.
 static BOOL lockedAlive(void) {
+    long locked = g_ov.m.locked;
     HWND h;
-    if (g_ov.m.locked < 0) return FALSE;
-    h = g_ov.wins[g_ov.m.locked].hwnd;
-    if (captureIsCapturable(h)) return TRUE;
+    if (locked < 0) return FALSE;
+    h = g_ov.wins[locked].hwnd;
+    if (uiPickerWindowStillOwned(h, g_ov.wins[locked].pid))
+        return TRUE;
     finishPick(UI_PICKER_WINDOW_DIED);
     return FALSE;
 }
@@ -534,7 +537,8 @@ static LRESULT CALLBACK overlayWndProc(HWND hwnd, UINT msg,
         return 0;
     case WM_TIMER:
         if (wp == PICKER_TIMER_ID && g_ov.m.locked >= 0
-            && !captureIsCapturable(g_ov.wins[g_ov.m.locked].hwnd))
+            && !uiPickerWindowStillOwned(g_ov.wins[g_ov.m.locked].hwnd,
+                                         g_ov.wins[g_ov.m.locked].pid))
             finishPick(UI_PICKER_WINDOW_DIED);
         return 0;
     default:
@@ -693,10 +697,18 @@ UiPickerResult uiPickerPick(const char *exeName,
 
     uiPickerStateInit(&g_ov.m, hadWindow, (size_t)n, existing, existingCount);
     if (startFrame) {
-        if (n == 1) uiPickerStateAutoLock(&g_ov.m);
+        // The single window may have died or been recycled onto another
+        // process between enumeration and lock; ownership-validate first.
+        if (n == 1) {
+            if (!uiPickerWindowStillOwned(g_ov.wins[0].hwnd, g_ov.wins[0].pid))
+                return UI_PICKER_WINDOW_DIED;
+            uiPickerStateAutoLock(&g_ov.m);
+        }
     } else {
         initial = findWindowIndex(initialWindow->hwnd);
-        if (initial < 0 || !captureIsCapturable(initialWindow->hwnd))
+        if (initial < 0
+            || !uiPickerWindowStillOwned(g_ov.wins[initial].hwnd,
+                                         g_ov.wins[initial].pid))
             return UI_PICKER_WINDOW_DIED;
         uiPickerStateLock(&g_ov.m, initial);
     }
@@ -760,6 +772,17 @@ UiPickerResult uiPickerFinishForTest(void) {
 
 HWND uiPickerOverlayHwndForTest(void) { return g_ov.overlay; }
 
+void uiPickerSetLockedPidForTest(DWORD pid) {
+    if (g_ov.m.locked < 0) return;
+    g_ov.wins[g_ov.m.locked].pid = pid;
+}
+
+BOOL uiPickerTimerTickForTest(void) {
+    if (g_ov.overlay == NULL || g_ov.m.locked < 0) return FALSE;
+    SendMessageW(g_ov.overlay, WM_TIMER, (WPARAM)PICKER_TIMER_ID, 0);
+    return g_ov.finished;
+}
+
 #else // !CLUMSY_OCR — no-op stubs for builds without OCR
 
 #include <stddef.h>
@@ -790,5 +813,7 @@ void uiPickerSetDragForTest(POINT screenA, POINT screenB) {
 BOOL uiPickerCompleteDragForTest(void) { return FALSE; }
 UiPickerResult uiPickerFinishForTest(void) { return UI_PICKER_CANCEL; }
 HWND uiPickerOverlayHwndForTest(void) { return NULL; }
+void uiPickerSetLockedPidForTest(DWORD pid) { (void)pid; }
+BOOL uiPickerTimerTickForTest(void) { return FALSE; }
 
 #endif // CLUMSY_OCR

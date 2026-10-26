@@ -28,6 +28,35 @@ static int g_fakeFired = 0;
 static int fakeActionCb(Ihandle *ih) { (void)ih; g_fakeFired = 1;
                                        return IUP_DEFAULT; }
 
+// Post-lock HWND-recycling driver: a one-shot timer that runs inside the
+// picker's IupPopup modal loop and emulates the locked handle being
+// recycled onto another process mid-pick.
+static HWND g_recycleHwnd;
+static int g_recyclePhase;
+static int recyclePickTimerCb(Ihandle *t) {
+    IupSetAttribute(t, "RUN", "NO");
+    assert(uiPickerOverlayHwndForTest() != NULL);
+    // Same HWND value, different current owner: the pinned pid no longer
+    // matches, so every gate must fail closed.
+    uiPickerSetLockedPidForTest(0x0DEFACEDu);
+    if (g_recyclePhase == 0) {
+        RECT r;
+        POINT a, b;
+        GetWindowRect(g_recycleHwnd, &r);
+        a.x = r.left + (r.right - r.left) / 8;
+        a.y = r.top + (r.bottom - r.top) / 8;
+        b.x = r.left + (r.right - r.left) * 6 / 8;
+        b.y = r.top + (r.bottom - r.top) * 6 / 8;
+        uiPickerSetDragForTest(a, b);
+        assert(!uiPickerCompleteDragForTest()); // band refused, no rect
+        assert(uiPickerFinishForTest() == UI_PICKER_WINDOW_DIED);
+    } else {
+        // The 300 ms death backstop detects the recycled owner too.
+        assert(uiPickerTimerTickForTest());
+    }
+    return IUP_DEFAULT;
+}
+
 // Minimal valid IPv4 TCP packet (20 IP + 20 TCP) for tuple parsing.
 static unsigned char g_tcpPacket[40] = {
     0x45, 0x00, 0x00, 0x28, 0, 0, 0, 0, 0, 6, 0, 0,
@@ -860,6 +889,75 @@ int main(void) {
                 WSACleanup();
             }
 
+            // Post-lock HWND recycling (Review Focus #1): DRAG actions,
+            // Done and the 300ms timer must compare the live owner pid
+            // against the pinned one, not mere window liveness; a
+            // recycled handle belongs to another process and must end
+            // the pick with WINDOW_DIED.
+            {
+                WSADATA rwsa;
+                SOCKET rudp;
+                struct sockaddr_in rsa;
+                char rExe[MAX_PATH], *rBase;
+                CaptureWindow rWin;
+                NormRect rRects[OCR_MAX_REGIONS];
+                size_t rN;
+                Ihandle *rt;
+
+                WSAStartup(MAKEWORD(2, 1), &rwsa);
+                rudp = socket(AF_INET, SOCK_DGRAM, 0);
+                assert(rudp != INVALID_SOCKET);
+                memset(&rsa, 0, sizeof(rsa));
+                rsa.sin_family = AF_INET;
+                rsa.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+                rsa.sin_port = 0;
+                assert(bind(rudp, (struct sockaddr *)&rsa,
+                            sizeof(rsa)) == 0);
+
+                g_recycleHwnd = CreateWindowExW(WS_EX_APPWINDOW, L"Static",
+                    L"recycle fixture",
+                    WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+                    300, 160, 380, 260, NULL, NULL,
+                    GetModuleHandleW(NULL), NULL);
+                assert(g_recycleHwnd != NULL);
+                GetModuleFileNameA(NULL, rExe, MAX_PATH);
+                rBase = strrchr(rExe, '\\');
+                if (rBase) rBase++; else rBase = rExe;
+                uiOcrSetAppContext(rBase);
+
+                // Phase 0: the band-complete and Done gates fail closed.
+                g_recyclePhase = 0;
+                rN = 99;
+                rt = IupTimer();
+                IupSetInt(rt, "TIME", 200);
+                IupSetCallback(rt, "ACTION_CB",
+                               (Icallback)recyclePickTimerCb);
+                IupSetAttribute(rt, "RUN", "YES");
+                assert(uiPickerPick(rBase, TRUE, FALSE, NULL, NULL, 0,
+                                    &rWin, rRects, &rN)
+                       == UI_PICKER_WINDOW_DIED);
+                IupDestroy(rt);
+                assert(rN == 0);
+
+                // Phase 1: the timer backstop fails closed on its own.
+                g_recyclePhase = 1;
+                rt = IupTimer();
+                IupSetInt(rt, "TIME", 200);
+                IupSetCallback(rt, "ACTION_CB",
+                               (Icallback)recyclePickTimerCb);
+                IupSetAttribute(rt, "RUN", "YES");
+                assert(uiPickerPick(rBase, TRUE, FALSE, NULL, NULL, 0,
+                                    &rWin, rRects, &rN)
+                       == UI_PICKER_WINDOW_DIED);
+                IupDestroy(rt);
+
+                DestroyWindow(g_recycleHwnd);
+                g_recycleHwnd = NULL;
+                closesocket(rudp);
+                WSACleanup();
+                uiOcrSetAppContext("no_such_app_xyz.exe");
+            }
+
             // Restore the field the negative cases damaged and populate
             // an enabled config (the startup restore path from
             // ocr_config.txt).
@@ -1011,6 +1109,18 @@ int main(void) {
             assert(GetFileAttributesA(left)
                    == INVALID_FILE_ATTRIBUTES);
         }
+        // HWND recycling between OK and Start (Review Focus #1): the
+        // live HWND's current owner differs from the pid pinned at pick
+        // time. Start must fail closed ("window:") before timeline or
+        // engine work, never retarget the foreign process.
+        picked.pid = 0x0DEFACEDu;
+        g_appFactoryCalls = 0;
+        assert(!ocrAppStart(&ac, &picked, "build/tests/app-recycled",
+                            "build/tests/no-models", 0, &hooks, aerr));
+        assert(g_appFactoryCalls == 0);
+        assert(!ocrAppRunning());
+        assert(strncmp(aerr, "window:", 7) == 0);
+
         ocrAppSetEngineFactoryForTest(NULL); // restore real factory
         DestroyWindow(fw);
     }

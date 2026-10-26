@@ -65,11 +65,24 @@ static BOOL resolveTarget(const OcrConfig *cfg,
             }
             return FALSE;
         }
+        // Re-read ownership: between the pick and this start the HWND may
+        // have been destroyed and its value recycled onto another process.
+        // A pinned pid that no longer matches must fail closed — never
+        // silently retarget loss at the recycling process.
+        DWORD livePid = 0;
+        GetWindowThreadProcessId(picked->hwnd, &livePid);
+        if (picked->pid != 0 && livePid != picked->pid) {
+            if (err) {
+                strncpy(err, "picked window belongs to another process",
+                        MSG_BUFSIZE - 1);
+            }
+            return FALSE;
+        }
         *out = *picked;
         if (out->pid == 0) {
-            // Pin the identity even when the picker omitted the PID;
-            // per-tick captureTargetAlive then detects HWND recycling.
-            GetWindowThreadProcessId(picked->hwnd, &out->pid);
+            // Adopt the live pid when the picker omitted it; per-tick
+            // captureTargetAlive then detects later HWND recycling.
+            out->pid = livePid;
         }
         return TRUE;
     }

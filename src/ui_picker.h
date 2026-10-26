@@ -64,5 +64,11 @@ UiPickerResult uiPickerFinishForTest(void);
 // Native HWND of the full-screen overlay for headless per-window grabs;
 // NULL when the overlay is not open.
 HWND uiPickerOverlayHwndForTest(void);
+// Overwrite the locked candidate's pinned pid with a non-matching one,
+// emulating HWND recycling onto another process after FRAME lock.
+void uiPickerSetLockedPidForTest(DWORD pid);
+// Deliver one WM_TIMER (the 300 ms death backstop) to the overlay and
+// report whether it finished the pick; FALSE when the pick survives.
+BOOL uiPickerTimerTickForTest(void);
 
 #endif // CLUMSY_UI_PICKER_H
