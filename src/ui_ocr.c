@@ -50,7 +50,7 @@ static OcrLossApplier g_lossApplier = NULL;
 static OcrLayoutChangedFn g_layoutChanged = NULL;
 static BOOL g_uiMapped = FALSE;
 
-static Ihandle *g_frame, *g_enableToggle, *g_body;
+static Ihandle *g_frame, *g_enableToggle, *g_body, *g_gateError;
 static Ihandle *g_windowLabel, *g_chooseBtn, *g_addBtn;
 static Ihandle *g_ruleBox, *g_interval, *g_changeToggle;
 static Ihandle *g_startBtn, *g_errorLabel;
@@ -113,6 +113,24 @@ static void setBodyVisible(BOOL visible) {
 
 static void showErrorText(const char *text) {
     IupStoreAttribute(g_errorLabel, "TITLE", text != NULL ? text : "");
+}
+
+// The gate error sits OUTSIDE the foldable body so a refusal stays on
+// screen while the body is folded. No refit here: callers flip it right
+// before setBodyVisible(), whose host callback performs the single refit.
+static void setGateError(BOOL show, const char *text) {
+    IupStoreAttribute(g_gateError, "TITLE",
+                      (show && text) ? text : "");
+    IupSetAttribute(g_gateError, "FLOATING", show ? "NO" : "YES");
+    IupSetAttribute(g_gateError, "VISIBLE", show ? "YES" : "NO");
+}
+
+// The in-block Start/Stop triggers the OCR session; with OCR disabled it
+// must stay inert (it shares the main affect callback).
+static void syncStartActive(void) {
+    if (g_startBtn != NULL) {
+        IupSetAttribute(g_startBtn, "ACTIVE", g_enabled ? "YES" : "NO");
+    }
 }
 
 static void rowError(size_t idx, const char *key) {
@@ -269,14 +287,20 @@ static int enableCb(Ihandle *ih, int state) {
         (void)state;
         if (on && g_appExe[0] == '\0') {
             // Safety gate: OCR must have a concrete target application.
+            // The explanation is the always-visible gate label, NOT the
+            // in-body error line: the body is folded here, so an in-body
+            // message would leave the click looking completely dead.
             IupSetAttribute(ih, "VALUE", "OFF");
             g_enabled = FALSE;
+            setGateError(TRUE, tr("ocr.blockedApp"));
             setBodyVisible(FALSE);
-            uiOcrShowError("ocr.blockedApp");
+            syncStartActive();
             return IUP_DEFAULT;
         }
+        setGateError(FALSE, NULL);
         g_enabled = on;
         setBodyVisible(on);
+        syncStartActive();
         if (on) showErrorText("");
     }
     return IUP_DEFAULT;
@@ -450,6 +474,12 @@ BOOL uiOcrPopulate(const OcrConfig *cfg) {
 
 void uiOcrSetAppContext(const char *exe) {
     copyField(g_appExe, sizeof(g_appExe), exe);
+    // A refusal warning naming "pick an application" goes stale the moment
+    // the user actually picks one; the next enable attempt is clean.
+    if (g_gateError != NULL && exe != NULL && exe[0] != '\0'
+        && IupGetInt(g_gateError, "VISIBLE") != 0) {
+        setGateError(FALSE, NULL);
+    }
     refreshPickerButtons();
 }
 
@@ -505,13 +535,19 @@ void uiOcrSetRunning(BOOL running) {
     g_running = running;
     IupSetAttribute(g_enableToggle, "ACTIVE", running ? "NO" : "YES");
     IupSetAttribute(g_body, "ACTIVE", running ? "NO" : "YES");
-    IupSetAttribute(g_startBtn, "ACTIVE", "YES");
+    // Running: the button is the live Stop control. Stopped: it returns
+    // to the enable-gated state (greyed until the section is enabled).
+    if (running) {
+        IupSetAttribute(g_startBtn, "ACTIVE", "YES");
+    } else {
+        syncStartActive();
+    }
     // While running both picker buttons are frozen; on stop they return
     // to the context-derived states (choose needs the app, add needs a
     // picked window).
     refreshPickerButtons();
     IupStoreAttribute(g_startBtn, "TITLE",
-                      running ? tr("action.stop") : tr("action.start"));
+                      running ? tr("ocr.stop") : tr("ocr.start"));
 }
 
 void uiOcrShowError(const char *keyOrText) {
@@ -531,7 +567,10 @@ void uiOcrRetranslate(void) {
         IupStoreAttribute(r->del, "TITLE", tr("ocr.delete"));
     }
     IupStoreAttribute(g_startBtn, "TITLE",
-                      g_running ? tr("action.stop") : tr("action.start"));
+                      g_running ? tr("ocr.stop") : tr("ocr.start"));
+    if (g_gateError != NULL && IupGetInt(g_gateError, "VISIBLE") != 0) {
+        IupStoreAttribute(g_gateError, "TITLE", tr("ocr.blockedApp"));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -651,8 +690,13 @@ Ihandle *uiOcrCreate(Icallback actionCbImpl) {
     IupSetAttribute(g_errorLabel, "WRAP", "YES");
     IupSetAttribute(g_errorLabel, "EXPAND", "HORIZONTAL");
 
-    g_startBtn = IupFlatButton(tr("action.start"));
+    // Short 开始/停止 label: this triggers the OCR session, distinct from
+    // the main green 开始影响 affect bar. Greyed until the section is on —
+    // a click while OCR is disabled must never silently start ordinary
+    // affect (uiOcrGlueStart early-returns when the gate is off).
+    g_startBtn = IupFlatButton(tr("ocr.start"));
     IupSetAttribute(g_startBtn, "RASTERSIZE", "120x28");
+    IupSetAttribute(g_startBtn, "ACTIVE", "NO");
     // The main green Start lives just below in the beginner window; this
     // in-block copy reads as a standard button (white with grey border)
     // rather than a second full-width bar or a borderless text line.
@@ -675,7 +719,17 @@ Ihandle *uiOcrCreate(Icallback actionCbImpl) {
     IupSetAttribute(g_body, "FLOATING", "YES");
     IupSetAttribute(g_body, "GAP", "6");
 
-    g_frame = IupFrame(IupVbox(g_enableToggle, g_body, NULL));
+    // Gate-refusal line placed OUTSIDE g_body so it can explain why a
+    // click on the enable checkbox did nothing while the body is still
+    // folded. Hidden + floating until a refusal actually happens.
+    g_gateError = IupFlatLabel("");
+    IupSetAttribute(g_gateError, "FGCOLOR", "208 70 72");
+    IupSetAttribute(g_gateError, "WRAP", "YES");
+    IupSetAttribute(g_gateError, "EXPAND", "HORIZONTAL");
+    IupSetAttribute(g_gateError, "VISIBLE", "NO");
+    IupSetAttribute(g_gateError, "FLOATING", "YES");
+
+    g_frame = IupFrame(IupVbox(g_enableToggle, g_gateError, g_body, NULL));
     i18nBind(g_frame, "TITLE", "ocr.title");
     // Bottom-up mapping: children map before the frame, so once the
     // frame maps all construction-time state is settled; only then let
@@ -706,6 +760,7 @@ Ihandle *uiOcrChooseButtonForTest(void) { return g_chooseBtn; }
 Ihandle *uiOcrAddButtonForTest(void) { return g_addBtn; }
 Ihandle *uiOcrStartButtonForTest(void) { return g_startBtn; }
 Ihandle *uiOcrBodyForTest(void) { return g_body; }
+Ihandle *uiOcrGateErrorForTest(void) { return g_gateError; }
 
 #else // !CLUMSY_OCR — no-op stubs for builds without OCR
 
@@ -737,6 +792,7 @@ Ihandle *uiOcrChooseButtonForTest(void) { return NULL; }
 Ihandle *uiOcrAddButtonForTest(void) { return NULL; }
 Ihandle *uiOcrStartButtonForTest(void) { return NULL; }
 Ihandle *uiOcrBodyForTest(void) { return NULL; }
+Ihandle *uiOcrGateErrorForTest(void) { return NULL; }
 void uiOcrSetMappedForTest(BOOL mapped) { (void)mapped; }
 BOOL uiOcrAddRegionForTest(const NormRect *norm) {
     (void)norm;

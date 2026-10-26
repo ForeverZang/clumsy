@@ -84,5 +84,8 @@ Ihandle *uiOcrChooseButtonForTest(void);
 Ihandle *uiOcrAddButtonForTest(void);
 Ihandle *uiOcrStartButtonForTest(void);
 Ihandle *uiOcrBodyForTest(void);
+// Test seam: always-visible (even when the body is folded) red label that
+// explains an enable-gate refusal such as "pick a concrete application".
+Ihandle *uiOcrGateErrorForTest(void);
 
 #endif // CLUMSY_UI_OCR_H

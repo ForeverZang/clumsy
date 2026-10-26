@@ -61,6 +61,10 @@ static const I18nEntry g_table[] = {
     // Main action and status lines
     {"action.start",            "开始影响", "Start"},
     {"action.stop",             "停止影响", "Stop"},
+    // Section ⑤'s own Start/Stop is the OCR session trigger, distinct
+    // from the main green affect bar.
+    {"ocr.start",               "开始", "Start"},
+    {"ocr.stop",                "停止", "Stop"},
     {"status.ready",            "已就绪，请选择应用并开始",
                                 "Ready — pick an app and press Start"},
     {"status.selectApp",        "请先选择一个应用",
