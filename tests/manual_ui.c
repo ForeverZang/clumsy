@@ -672,7 +672,7 @@ int main(int argc, char **argv) {
     advancedBox = uiAdvancedCreate();
 #if defined(CLUMSY_OCR)
     {
-        Ihandle *ocrBox = uiOcrCreate((Icallback)noop);
+        Ihandle *ocrBox = uiOcrCreate();
         uiSimpleAppendSection(ocrBox);
         // Folding section ⑤ changes its natural size post-map; the OCR
         // block asks the host to re-fit the RESIZE=NO dialog.

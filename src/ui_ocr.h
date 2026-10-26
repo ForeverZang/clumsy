@@ -8,16 +8,17 @@
 
 /*
  * Section ⑤ of the beginner page: collapsible OCR automation block —
- * enable gate, target window row, region rule rows, parameters, the
- * scrolling CSV timeline mirror and the in-block Start/Stop button.
+ * enable gate, target window row, region/group tables, parameters and
+ * the scrolling CSV timeline mirror. The block has no Start button of
+ * its own: the main window's green/red bar ("开始影响 / 停止影响") is
+ * the sole Start/Stop surface.
  *
  * The whole implementation compiles to no-op stubs when CLUMSY_OCR is
  * not defined (build.zig); main.c guards its call sites the same way.
  */
 
-// Build the section. actionCb is main's single Start/Stop entry point
-// (bound to the block's FlatButton FLAT_ACTION; NULL tolerated).
-Ihandle *uiOcrCreate(Icallback actionCb);
+// Build the section.
+Ihandle *uiOcrCreate(void);
 void uiOcrRetranslate(void);
 
 // Current selected application image name (NULL / "" = all applications:
@@ -79,7 +80,6 @@ BOOL uiOcrAddRegionForTest(const NormRect *norm);
 Ihandle *uiOcrEnableToggleForTest(void);
 Ihandle *uiOcrChooseButtonForTest(void);
 Ihandle *uiOcrAddButtonForTest(void);
-Ihandle *uiOcrStartButtonForTest(void);
 Ihandle *uiOcrBodyForTest(void);
 // Test seam: always-visible (even when the body is folded) red label that
 // explains an enable-gate refusal such as "pick a concrete application".

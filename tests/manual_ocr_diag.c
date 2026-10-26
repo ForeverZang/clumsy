@@ -1,7 +1,8 @@
 // Throwaway diagnostic (Phase 1 evidence): does a REAL native click on
-// the section-⑤ toggle and its in-block Start button reach the callbacks
-// after the folded body is expanded? Mirrors main.c dialog assembly but
-// records actions instead of attaching WinDivert.
+// the section-⑤ toggle reach its callback after the folded body is
+// expanded, and does the enable gate + glue preflight behave? Mirrors
+// main.c dialog assembly but records actions instead of attaching
+// WinDivert.
 #include <stdlib.h>
 #include <stdio.h>
 #include <winsock2.h>
@@ -125,7 +126,7 @@ static void fitLive(void) {
 }
 
 int main(void) {
-    Ihandle *toggle, *start, *body;
+    Ihandle *toggle, *body;
     HWND dh;
     int targc = 1;
     char *targv[] = { (char*)"diag", NULL };
@@ -137,12 +138,11 @@ int main(void) {
     i18nSetLang(LANG_ZH);
 
     Ihandle *simpleBox = uiSimpleCreate((Icallback)recorder, NULL);
-    Ihandle *ocr = uiOcrCreate((Icallback)recorder);
+    Ihandle *ocr = uiOcrCreate();
     uiSimpleAppendSection(ocr);
     uiOcrGlueInit();
 
     toggle = uiOcrEnableToggleForTest();
-    start = uiOcrStartButtonForTest();
     body = uiOcrBodyForTest();
 
     g_topVbox = IupVbox(simpleBox, NULL);
@@ -156,9 +156,9 @@ int main(void) {
     fitLive();
     pump(10);
     dh = (HWND)(intptr_t)IupGetAttribute(g_dlg, "HWND");
-    printf("== folded: body VISIBLE=%s FLOATING=%s startHWND=%p enabled=%d\n",
+    printf("== folded: body VISIBLE=%s FLOATING=%s enabled=%d\n",
            IupGetAttribute(body, "VISIBLE"), IupGetAttribute(body, "FLOATING"),
-           (void*)IupGetAttribute(start, "HWND"), (int)uiOcrEnabled());
+           (int)uiOcrEnabled());
     shot(dh, "build/diag1-folded.bmp");
 
     printf("\n== stage A: real click, NO app context (expect refusal)\n");
@@ -173,26 +173,18 @@ int main(void) {
     uiOcrSetAppContext("diag.exe");
     realClick(toggle, "toggle-B");
     pump(20);
-    printf("after B: VALUE=%s enabled=%d body VISIBLE=%s FLOATING=%s startHWND=%p\n",
+    printf("after B: VALUE=%s enabled=%d body VISIBLE=%s FLOATING=%s\n",
            IupGetAttribute(toggle, "VALUE"), (int)uiOcrEnabled(),
-           IupGetAttribute(body, "VISIBLE"), IupGetAttribute(body, "FLOATING"),
-           (void*)IupGetAttribute(start, "HWND"));
+           IupGetAttribute(body, "VISIBLE"), IupGetAttribute(body, "FLOATING"));
     shot(dh, "build/diag3-expanded.bmp");
 
-    printf("\n== stage C: real click on in-block Start (0 rules)\n");
-    g_fired = 0;
-    realClick(start, "start-C");
-    pump(20);
-    printf("after C: recorder fired %d time(s)\n", g_fired);
-    shot(dh, "build/diag4-start0rules.bmp");
-
-    printf("\n== stage D: direct glue start with 0 rules (preflight evidence)\n");
+    printf("\n== stage C: direct glue start with 0 rules (preflight evidence)\n");
     {
         BOOL ok = uiOcrGlueStart(0);
         printf("uiOcrGlueStart(0) = %d (FALSE means refused, TRUE means passed)\n", (int)ok);
     }
     pump(10);
-    shot(dh, "build/diag5-glue0rules.bmp");
+    shot(dh, "build/diag4-glue0rules.bmp");
 
     uiOcrGlueCleanup();
     IupDestroy(g_dlg);

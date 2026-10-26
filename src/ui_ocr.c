@@ -17,7 +17,6 @@
 #define OCR_MIN_INTERVAL_MS 200
 #define OCR_MAX_INTERVAL_MS 60000
 
-static Icallback g_actionCb = NULL;
 static OcrLossApplier g_lossApplier = NULL;
 static OcrLayoutChangedFn g_layoutChanged = NULL;
 static BOOL g_uiMapped = FALSE;
@@ -25,7 +24,7 @@ static BOOL g_uiMapped = FALSE;
 static Ihandle *g_frame, *g_enableToggle, *g_body, *g_gateError;
 static Ihandle *g_windowLabel, *g_chooseBtn, *g_addBtn;
 static Ihandle *g_interval, *g_changeToggle;
-static Ihandle *g_startBtn, *g_errorLabel;
+static Ihandle *g_errorLabel;
 
 static char g_appExe[128] = "";
 static char g_windowTitle[256] = "";
@@ -93,14 +92,6 @@ static void setGateError(BOOL show, const char *text) {
     IupSetAttribute(g_gateError, "VISIBLE", show ? "YES" : "NO");
 }
 
-// The in-block Start/Stop triggers the OCR session; with OCR disabled it
-// must stay inert (it shares the main affect callback).
-static void syncStartActive(void) {
-    if (g_startBtn != NULL) {
-        IupSetAttribute(g_startBtn, "ACTIVE", g_enabled ? "YES" : "NO");
-    }
-}
-
 static void refreshWindowLabel(void) {
     IupStoreAttribute(g_windowLabel, "TITLE",
                       g_windowTitle[0] != '\0' ? g_windowTitle
@@ -147,13 +138,11 @@ static int enableCb(Ihandle *ih, int state) {
             g_enabled = FALSE;
             setGateError(TRUE, tr("ocr.blockedApp"));
             setBodyVisible(FALSE);
-            syncStartActive();
             return IUP_DEFAULT;
         }
         setGateError(FALSE, NULL);
         g_enabled = on;
         setBodyVisible(on);
-        syncStartActive();
         if (on) showErrorText("");
     }
     return IUP_DEFAULT;
@@ -346,21 +335,15 @@ BOOL uiOcrPickedWindow(CaptureWindow *out) {
 
 void uiOcrSetRunning(BOOL running) {
     g_running = running;
+    // Running freezes the section's configuration widgets only; the
+    // single Start/Stop surface is the green/red bar in the main area,
+    // whose label main.c owns ("开始影响 / 停止影响").
     IupSetAttribute(g_enableToggle, "ACTIVE", running ? "NO" : "YES");
     IupSetAttribute(g_body, "ACTIVE", running ? "NO" : "YES");
-    // Running: the button is the live Stop control. Stopped: it returns
-    // to the enable-gated state (greyed until the section is enabled).
-    if (running) {
-        IupSetAttribute(g_startBtn, "ACTIVE", "YES");
-    } else {
-        syncStartActive();
-    }
     // While running the tables and both picker buttons freeze; on stop
     // they return to their gate-derived states.
     uiOcrGroupsSetRunning(running);
     refreshPickerButtons();
-    IupStoreAttribute(g_startBtn, "TITLE",
-                      running ? tr("ocr.stop") : tr("ocr.start"));
 }
 
 void uiOcrShowError(const char *keyOrText) {
@@ -374,8 +357,6 @@ void uiOcrShowError(const char *keyOrText) {
 void uiOcrRetranslate(void) {
     refreshWindowLabel();
     uiOcrGroupsRetranslate();
-    IupStoreAttribute(g_startBtn, "TITLE",
-                      g_running ? tr("ocr.stop") : tr("ocr.start"));
     if (g_gateError != NULL && IupGetInt(g_gateError, "VISIBLE") != 0) {
         IupStoreAttribute(g_gateError, "TITLE", tr("ocr.blockedApp"));
     }
@@ -427,10 +408,8 @@ static int frameMapCb(Ihandle *frame) {
     return IUP_DEFAULT;
 }
 
-Ihandle *uiOcrCreate(Icallback actionCbImpl) {
-    Ihandle *windowRow, *groupsRoot, *paramsRow, *logArea, *startRow;
-
-    g_actionCb = actionCbImpl;
+Ihandle *uiOcrCreate(void) {
+    Ihandle *windowRow, *groupsRoot, *paramsRow, *logArea;
 
     g_enableToggle = IupFlatToggle(tr("ocr.enable"));
     i18nBind(g_enableToggle, "TITLE", "ocr.enable");
@@ -463,30 +442,11 @@ Ihandle *uiOcrCreate(Icallback actionCbImpl) {
     IupSetAttribute(g_errorLabel, "WRAP", "YES");
     IupSetAttribute(g_errorLabel, "EXPAND", "HORIZONTAL");
 
-    // Short 开始/停止 label: this triggers the OCR session, distinct from
-    // the main green 开始影响 affect bar. Greyed until the section is on —
-    // a click while OCR is disabled must never silently start ordinary
-    // affect (uiOcrGlueStart early-returns when the gate is off).
-    g_startBtn = IupFlatButton(tr("ocr.start"));
-    IupSetAttribute(g_startBtn, "RASTERSIZE", "120x28");
-    IupSetAttribute(g_startBtn, "ACTIVE", "NO");
-    // The main green Start lives just below in the beginner window; this
-    // in-block copy reads as a standard button (white with grey border)
-    // rather than a second full-width bar or a borderless text line.
-    IupSetAttribute(g_startBtn, "BGCOLOR", "255 255 255");
-    IupSetAttribute(g_startBtn, "HLCOLOR", "232 236 242");
-    IupSetAttribute(g_startBtn, "PSCOLOR", "208 214 222");
-    IupSetAttribute(g_startBtn, "FGCOLOR", "32 32 36");
-    IupSetAttribute(g_startBtn, "TEXTHLCOLOR", "32 32 36");
-    IupSetAttribute(g_startBtn, "TEXTPSCOLOR", "32 32 36");
-    IupSetAttribute(g_startBtn, "BORDERCOLOR", "170 174 180");
-    if (g_actionCb != NULL) {
-        IupSetCallback(g_startBtn, "FLAT_ACTION", g_actionCb);
-    }
-    startRow = IupHbox(IupFill(), g_startBtn, IupFill(), NULL);
-
+    // No in-block Start: the bottom green/red bar ("开始影响 /
+    // 停止影响") is the sole Start/Stop surface and its label never
+    // changes semantics.
     g_body = IupVbox(windowRow, groupsRoot, paramsRow,
-                     logArea, g_errorLabel, startRow, NULL);
+                     logArea, g_errorLabel, NULL);
     IupSetAttribute(g_body, "VISIBLE", "NO");
     IupSetAttribute(g_body, "FLOATING", "YES");
     IupSetAttribute(g_body, "GAP", "6");
@@ -525,7 +485,6 @@ BOOL uiOcrAddRegionForTest(const NormRect *norm) {
 Ihandle *uiOcrEnableToggleForTest(void) { return g_enableToggle; }
 Ihandle *uiOcrChooseButtonForTest(void) { return g_chooseBtn; }
 Ihandle *uiOcrAddButtonForTest(void) { return g_addBtn; }
-Ihandle *uiOcrStartButtonForTest(void) { return g_startBtn; }
 Ihandle *uiOcrBodyForTest(void) { return g_body; }
 Ihandle *uiOcrGateErrorForTest(void) { return g_gateError; }
 Ihandle *uiOcrErrorLabelForTest(void) { return g_errorLabel; }
@@ -534,8 +493,7 @@ Ihandle *uiOcrErrorLabelForTest(void) { return g_errorLabel; }
 
 #include <stddef.h>
 
-Ihandle *uiOcrCreate(Icallback actionCb) {
-    (void)actionCb;
+Ihandle *uiOcrCreate(void) {
     return NULL;
 }
 void uiOcrRetranslate(void) {}
@@ -558,7 +516,6 @@ void uiOcrShowError(const char *keyOrText) { (void)keyOrText; }
 Ihandle *uiOcrEnableToggleForTest(void) { return NULL; }
 Ihandle *uiOcrChooseButtonForTest(void) { return NULL; }
 Ihandle *uiOcrAddButtonForTest(void) { return NULL; }
-Ihandle *uiOcrStartButtonForTest(void) { return NULL; }
 Ihandle *uiOcrBodyForTest(void) { return NULL; }
 Ihandle *uiOcrGateErrorForTest(void) { return NULL; }
 Ihandle *uiOcrErrorLabelForTest(void) { return NULL; }

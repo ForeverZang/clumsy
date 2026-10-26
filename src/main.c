@@ -421,9 +421,8 @@ void init(int argc, char* argv[]) {
 #if defined(CLUMSY_OCR)
     {
         // Section ⑤ mounts between the live chart and the Start row;
-        // its own Start/Stop button drives the same uiToggleActionCb.
-        Ihandle *ocrSection =
-            uiOcrCreate((Icallback)uiToggleActionCb);
+        // the green bar below it is its only Start/Stop surface.
+        Ihandle *ocrSection = uiOcrCreate();
         uiSimpleAppendSection(ocrSection);
         uiOcrGlueInit();
         uiOcrGlueLoadSavedConfig(); // missing file: silent defaults

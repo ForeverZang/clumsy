@@ -157,11 +157,10 @@ int main(void) {
         // gate, config roundtrip via row widgets, invalid-row rejection,
         // external loss seam. Mounts into the beginner vbox like main does.
         {
-            Ihandle *ocr = uiOcrCreate((Icallback)fakeActionCb);
+            Ihandle *ocr = uiOcrCreate();
             Ihandle *enToggle = uiOcrEnableToggleForTest();
             Ihandle *pick = uiOcrChooseButtonForTest();
             Ihandle *addBtn = uiOcrAddButtonForTest();
-            Ihandle *startBtn = uiOcrStartButtonForTest();
             Ihandle *ocrBody = uiOcrBodyForTest();
             Ihandle *gateErr = uiOcrGateErrorForTest();
             Icallback enCb;
@@ -182,11 +181,6 @@ int main(void) {
 
             assert(ocr != NULL);
             assert(enToggle != NULL && ocrBody != NULL);
-            // Action button in the OCR block dispatches to main's
-            // Start/Stop callback (wired on FlatButton's FLAT_ACTION).
-            assert(startBtn != NULL);
-            assert(IupGetCallback(startBtn, "FLAT_ACTION")
-                   == (Icallback)fakeActionCb);
             // Window/region buttons are Task 9 placeholders in Task 8.
             assert(pick != NULL && addBtn != NULL);
             assert(IupGetAttribute(pick, "ACTIVE") == NULL
@@ -196,10 +190,6 @@ int main(void) {
             // detection on.
             assert(uiOcrEnabled() == FALSE);
             assert(strcmp(IupGetAttribute(ocrBody, "VISIBLE"), "NO") == 0);
-            // The in-block Start must not fire while OCR is disabled:
-            // it shares main's Start callback and would otherwise begin
-            // an ordinary affect session from inside section ⑤.
-            assert(strcmp(IupGetAttribute(startBtn, "ACTIVE"), "NO") == 0);
             // The gate error lives OUTSIDE the folded body, but starts
             // hidden and out of natural-size flow.
             assert(gateErr != NULL);
@@ -268,7 +258,6 @@ int main(void) {
             assert(strcmp(IupGetAttribute(gateErr, "FLOATING"), "NO") == 0);
             assert(strcmp(IupGetAttribute(gateErr, "TITLE"),
                           tr("ocr.blockedApp")) == 0);
-            assert(strcmp(IupGetAttribute(startBtn, "ACTIVE"), "NO") == 0);
 
             // A concrete app: enable expands the body; collected config
             // carries the context exe with default parameters. The
@@ -282,19 +271,16 @@ int main(void) {
             assert(uiOcrEnabled() == TRUE);
             assert(strcmp(IupGetAttribute(ocrBody, "VISIBLE"), "YES") == 0);
             assert(strcmp(IupGetAttribute(ocrBody, "FLOATING"), "NO") == 0);
-            // A real enable hides the gate warning and arms the block's
-            // own Start/Stop button.
+            // A real enable hides the gate warning; the green bar in
+            // the main area is the sole Start (already wired in main).
             assert(strcmp(IupGetAttribute(gateErr, "VISIBLE"), "NO") == 0);
-            assert(strcmp(IupGetAttribute(startBtn, "ACTIVE"), "YES") == 0);
 
-            // Disabling again folds the block, hides any gate text and
-            // disarms the in-block Start.
+            // Disabling again folds the block and hides any gate text.
             IupSetAttribute(enToggle, "VALUE", "OFF");
             ((ToggleActionFn)enCb)(enToggle, 0);
             assert(uiOcrEnabled() == FALSE);
             assert(strcmp(IupGetAttribute(ocrBody, "VISIBLE"), "NO") == 0);
             assert(strcmp(IupGetAttribute(gateErr, "VISIBLE"), "NO") == 0);
-            assert(strcmp(IupGetAttribute(startBtn, "ACTIVE"), "NO") == 0);
 
             // Re-enable for the config round-trip cases below.
             IupSetAttribute(enToggle, "VALUE", "ON");
@@ -681,18 +667,13 @@ int main(void) {
             assert(fabs(IupGetFloat(uiSimpleSlider(), "VALUE") - 0.07f)
                    < 1e-5f);
 
-            // Running freezes the editors; stop re-enables them. The
-            // in-block Start stays clickable while running (it is the
-            // Stop button by then), titled with the dedicated OCR labels.
+            // Running freezes the editors; stop re-enables them. There
+            // is no start control in this block anymore: the bottom
+            // green/red bar is the only Start/Stop surface.
             uiOcrSetRunning(TRUE);
             assert(strcmp(IupGetAttribute(enToggle, "ACTIVE"), "NO") == 0);
-            assert(strcmp(IupGetAttribute(startBtn, "ACTIVE"), "YES") == 0);
-            assert(strcmp(IupGetAttribute(startBtn, "TITLE"),
-                          tr("ocr.stop")) == 0);
             uiOcrSetRunning(FALSE);
             assert(strcmp(IupGetAttribute(enToggle, "ACTIVE"), "YES") == 0);
-            assert(strcmp(IupGetAttribute(startBtn, "TITLE"),
-                          tr("ocr.start")) == 0);
 
             // Task 9: "Choose window" is active once an app context
             // exists; "Add region" waits for a window picked this
