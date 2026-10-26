@@ -418,7 +418,7 @@ static int showCb(Ihandle *dlg, int state) {
 }
 
 #if defined(CLUMSY_OCR)
-// "ocr" mode: section expanded with two fake rules, sample timeline
+// "ocr" mode: section expanded with two fake groups, sample timeline
 // mirror and a CSV path; any other mode mounts it folded and disabled.
 static void setupOcr(BOOL expanded) {
     OcrConfig cfg;
@@ -428,27 +428,34 @@ static void setupOcr(BOOL expanded) {
     cfg.enabled = expanded;
     cfg.changeDetect = TRUE;
     cfg.intervalMs = 500;
-    cfg.ruleCount = 2;
+    cfg.regionCount = 2;
+    cfg.groupCount = 2;
 
-    strcpy(cfg.rules[0].name, "idle-bar");
-    strcpy(cfg.rules[0].keywords, "仓库");
-    cfg.rules[0].edge = OCR_EDGE_DISAPPEAR;
-    cfg.rules[0].confirmFrames = 2;
-    cfg.rules[0].lossPercent = 95;
-    cfg.rules[0].norm.x = 0.10;
-    cfg.rules[0].norm.y = 0.90;
-    cfg.rules[0].norm.w = 0.50;
-    cfg.rules[0].norm.h = 0.08;
+    strcpy(cfg.regions[0].name, "idle-bar");
+    cfg.regions[0].norm.x = 0.10;
+    cfg.regions[0].norm.y = 0.90;
+    cfg.regions[0].norm.w = 0.50;
+    cfg.regions[0].norm.h = 0.08;
 
-    strcpy(cfg.rules[1].name, "reconnect");
-    strcpy(cfg.rules[1].keywords, "重连,reconnect");
-    cfg.rules[1].edge = OCR_EDGE_APPEAR;
-    cfg.rules[1].confirmFrames = 1;
-    cfg.rules[1].lossPercent = 50;
-    cfg.rules[1].norm.x = 0.35;
-    cfg.rules[1].norm.y = 0.40;
-    cfg.rules[1].norm.w = 0.30;
-    cfg.rules[1].norm.h = 0.20;
+    strcpy(cfg.regions[1].name, "reconnect");
+    cfg.regions[1].norm.x = 0.35;
+    cfg.regions[1].norm.y = 0.40;
+    cfg.regions[1].norm.w = 0.30;
+    cfg.regions[1].norm.h = 0.20;
+
+    cfg.groups[0].edge = OCR_EDGE_DISAPPEAR;
+    cfg.groups[0].confirmFrames = 2;
+    cfg.groups[0].lossPercent = 95;
+    cfg.groups[0].memberCount = 1;
+    cfg.groups[0].members[0].regionIndex = 0;
+    strcpy(cfg.groups[0].members[0].keywords, "仓库");
+
+    cfg.groups[1].edge = OCR_EDGE_APPEAR;
+    cfg.groups[1].confirmFrames = 1;
+    cfg.groups[1].lossPercent = 50;
+    cfg.groups[1].memberCount = 1;
+    cfg.groups[1].members[0].regionIndex = 1;
+    strcpy(cfg.groups[1].members[0].keywords, "重连,reconnect");
 
     uiOcrSetAppContext("qa-fixture.exe");
     uiOcrPopulate(&cfg);
@@ -460,15 +467,15 @@ static void setupOcr(BOOL expanded) {
         snprintf(line, sizeof(line), tr("ocr.log.start"), 0);
         uiOcrAppendLog(line);
         snprintf(line, sizeof(line), tr("ocr.log.trigger"),
-                 "idle-bar", "仓库", 95);
+                 "group 1", "仓库", 95);
         uiOcrAppendLog(line);
         snprintf(line, sizeof(line), tr("ocr.log.loss"), 95);
         uiOcrAppendLog(line);
         snprintf(line, sizeof(line), tr("ocr.log.unavailable"),
-                 "reconnect");
+                 "group 2");
         uiOcrAppendLog(line);
         snprintf(line, sizeof(line), tr("ocr.log.trigger"),
-                 "reconnect", "重连", 50);
+                 "group 2", "重连", 50);
         uiOcrAppendLog(line);
         snprintf(line, sizeof(line), tr("ocr.log.loss"), 50);
         uiOcrAppendLog(line);
@@ -527,7 +534,6 @@ static void setupPickerOcr(void) {
     cfg.enabled = TRUE;
     cfg.changeDetect = TRUE;
     cfg.intervalMs = 500;
-    cfg.ruleCount = 0;
     uiOcrSetAppContext(g_pickExe);
     uiOcrPopulate(&cfg);
 }

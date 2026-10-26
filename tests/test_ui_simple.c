@@ -166,7 +166,8 @@ int main(void) {
             // this cast.
             typedef int (*ToggleActionFn)(Ihandle *, int);
             OcrConfig cfg, got;
-            OcrRule *r0, *r1;
+            OcrRegionDef *d0, *d1;
+            OcrGroup *g0, *g1;
 
             assert(ocr != NULL);
             assert(enToggle != NULL && ocrBody != NULL);
@@ -272,72 +273,88 @@ int main(void) {
             assert(strcmp(got.exeName, "qa-fixture.exe") == 0);
             assert(got.intervalMs == 500);
             assert(got.changeDetect == TRUE);
-            assert(got.ruleCount == 0);
+            assert(got.regionCount == 0);
+            assert(got.groupCount == 0);
 
-            // Two rules round-trip through the row widgets (zh keywords,
-            // norm preservation, dropdown edge mapping).
+            // Two parallel region + single-member-group rows round-trip
+            // through the row widgets (zh keywords, norm preservation,
+            // dropdown edge mapping) under the Task 2 interim adapter.
             memset(&cfg, 0, sizeof(cfg));
             strcpy(cfg.exeName, "qa-fixture.exe");
             strcpy(cfg.windowTitle, "QA Fixture 窗口");
             cfg.intervalMs = 500;
             cfg.changeDetect = TRUE;
-            cfg.ruleCount = 2;
-            r0 = &cfg.rules[0];
-            strcpy(r0->name, "idle-bar");
-            strcpy(r0->keywords, "仓库");
-            r0->edge = OCR_EDGE_DISAPPEAR;
-            r0->confirmFrames = 2;
-            r0->lossPercent = 95;
-            r0->norm.x = 0.1; r0->norm.y = 0.9;
-            r0->norm.w = 0.5; r0->norm.h = 0.08;
-            r1 = &cfg.rules[1];
-            strcpy(r1->name, "reconnect");
-            strcpy(r1->keywords, "重连,reconnect");
-            r1->edge = OCR_EDGE_APPEAR;
-            r1->confirmFrames = 1;
-            r1->lossPercent = 50;
-            r1->norm.x = 0.2; r1->norm.y = 0.3;
-            r1->norm.w = 0.3; r1->norm.h = 0.2;
+            cfg.regionCount = 2;
+            cfg.groupCount = 2;
+            d0 = &cfg.regions[0];
+            strcpy(d0->name, "idle-bar");
+            d0->norm.x = 0.1; d0->norm.y = 0.9;
+            d0->norm.w = 0.5; d0->norm.h = 0.08;
+            d1 = &cfg.regions[1];
+            strcpy(d1->name, "reconnect");
+            d1->norm.x = 0.2; d1->norm.y = 0.3;
+            d1->norm.w = 0.3; d1->norm.h = 0.2;
+            g0 = &cfg.groups[0];
+            g0->edge = OCR_EDGE_DISAPPEAR;
+            g0->confirmFrames = 2;
+            g0->lossPercent = 95;
+            g0->memberCount = 1;
+            g0->members[0].regionIndex = 0;
+            strcpy(g0->members[0].keywords, "仓库");
+            g1 = &cfg.groups[1];
+            g1->edge = OCR_EDGE_APPEAR;
+            g1->confirmFrames = 1;
+            g1->lossPercent = 50;
+            g1->memberCount = 1;
+            g1->members[0].regionIndex = 1;
+            strcpy(g1->members[0].keywords, "重连,reconnect");
             assert(uiOcrPopulate(&cfg));
             memset(&got, 0, sizeof(got));
             assert(uiOcrGetConfig(&got));
-            assert(got.ruleCount == 2);
-            assert(strcmp(got.rules[0].name, "idle-bar") == 0);
-            assert(strcmp(got.rules[0].keywords, "仓库") == 0);
-            assert(got.rules[0].edge == OCR_EDGE_DISAPPEAR);
-            assert(got.rules[0].confirmFrames == 2);
-            assert(got.rules[0].lossPercent == 95);
-            assert(fabs(got.rules[0].norm.x - 0.1) < 1e-6);
-            assert(fabs(got.rules[0].norm.y - 0.9) < 1e-6);
-            assert(fabs(got.rules[0].norm.w - 0.5) < 1e-6);
-            assert(fabs(got.rules[0].norm.h - 0.08) < 1e-6);
-            assert(strcmp(got.rules[1].keywords, "重连,reconnect") == 0);
-            assert(got.rules[1].edge == OCR_EDGE_APPEAR);
-            assert(got.rules[1].confirmFrames == 1);
-            assert(got.rules[1].lossPercent == 50);
+            assert(got.regionCount == 2);
+            assert(got.groupCount == 2);
+            assert(strcmp(got.regions[0].name, "idle-bar") == 0);
+            assert(fabs(got.regions[0].norm.x - 0.1) < 1e-6);
+            assert(fabs(got.regions[0].norm.y - 0.9) < 1e-6);
+            assert(fabs(got.regions[0].norm.w - 0.5) < 1e-6);
+            assert(fabs(got.regions[0].norm.h - 0.08) < 1e-6);
+            assert(got.groups[0].edge == OCR_EDGE_DISAPPEAR);
+            assert(got.groups[0].confirmFrames == 2);
+            assert(got.groups[0].lossPercent == 95);
+            assert(got.groups[0].memberCount == 1);
+            assert(got.groups[0].members[0].regionIndex == 0);
+            assert(strcmp(got.groups[0].members[0].keywords,
+                          "仓库") == 0);
+            assert(got.groups[1].memberCount == 1);
+            assert(got.groups[1].members[0].regionIndex == 1);
+            assert(strcmp(got.groups[1].members[0].keywords,
+                          "重连,reconnect") == 0);
+            assert(got.groups[1].edge == OCR_EDGE_APPEAR);
+            assert(got.groups[1].confirmFrames == 1);
+            assert(got.groups[1].lossPercent == 50);
             assert(strcmp(got.windowTitle, "QA Fixture 窗口") == 0);
             assert(strcmp(got.exeName, "qa-fixture.exe") == 0);
 
             // Invalid rows make collection fail (Start must refuse):
             // loss out of 0..100, 0 confirm frames, empty keywords.
-            cfg.rules[0].lossPercent = 120;
+            cfg.groups[0].lossPercent = 120;
             assert(uiOcrPopulate(&cfg));
             memset(&got, 0, sizeof(got));
             assert(!uiOcrGetConfig(&got));
-            cfg.rules[0].lossPercent = 95;
+            cfg.groups[0].lossPercent = 95;
 
-            cfg.rules[1].confirmFrames = 0;
+            cfg.groups[1].confirmFrames = 0;
             assert(uiOcrPopulate(&cfg));
             assert(!uiOcrGetConfig(&got));
-            cfg.rules[1].confirmFrames = 1;
+            cfg.groups[1].confirmFrames = 1;
 
-            cfg.rules[0].keywords[0] = '\0';
+            cfg.groups[0].members[0].keywords[0] = '\0';
             assert(uiOcrPopulate(&cfg));
             assert(!uiOcrGetConfig(&got));
 
             // Restore the field the negative case damaged: the Task 9
             // positive cases below collect a config that must validate.
-            strcpy(cfg.rules[0].keywords, "仓库");
+            strcpy(cfg.groups[0].members[0].keywords, "仓库");
             assert(uiOcrPopulate(&cfg));
 
             // Log mirror: the FIRST append grows the buffer from NULL;
@@ -417,24 +434,28 @@ int main(void) {
                 assert(strcmp(uiOcrSavedWindowTitle(),
                               "QA Fixture 窗口") == 0);
 
-                // A picked region appends a placeholder row the user
-                // then fills in: default DISAPPEAR / 2 frames / 95% is
-                // never auto-armed on empty keywords (Start validation
-                // rejects the empty keywords).
+                // A picked region appends a placeholder region + group
+                // the user then fills in: default DISAPPEAR / 2 frames /
+                // 95%, member pointing at the parallel region. Strict
+                // collection now refuses empty keywords itself; on
+                // failure *out is still fully written, so the defaults
+                // are asserted on the rejected config.
                 nr.x = 0.10; nr.y = 0.90; nr.w = 0.50; nr.h = 0.08;
                 assert(uiOcrAddRegionForTest(&nr));
                 memset(&got, 0, sizeof(got));
-                assert(uiOcrGetConfig(&got));
-                assert(got.ruleCount == 3);
-                assert(strcmp(got.rules[2].name, "Region 1") == 0);
-                assert(got.rules[2].keywords[0] == '\0');
-                assert(got.rules[2].edge == OCR_EDGE_DISAPPEAR);
-                assert(got.rules[2].confirmFrames == 2);
-                assert(got.rules[2].lossPercent == 95);
-                assert(fabs(got.rules[2].norm.x - 0.10) < 1e-6);
-                assert(fabs(got.rules[2].norm.y - 0.90) < 1e-6);
-                assert(fabs(got.rules[2].norm.w - 0.50) < 1e-6);
-                assert(fabs(got.rules[2].norm.h - 0.08) < 1e-6);
+                assert(!uiOcrGetConfig(&got));
+                assert(got.regionCount == 3);
+                assert(got.groupCount == 3);
+                assert(strcmp(got.regions[2].name, "Region 1") == 0);
+                assert(got.groups[2].members[0].regionIndex == 2);
+                assert(got.groups[2].members[0].keywords[0] == '\0');
+                assert(got.groups[2].edge == OCR_EDGE_DISAPPEAR);
+                assert(got.groups[2].confirmFrames == 2);
+                assert(got.groups[2].lossPercent == 95);
+                assert(fabs(got.regions[2].norm.x - 0.10) < 1e-6);
+                assert(fabs(got.regions[2].norm.y - 0.90) < 1e-6);
+                assert(fabs(got.regions[2].norm.w - 0.50) < 1e-6);
+                assert(fabs(got.regions[2].norm.h - 0.08) < 1e-6);
 
                 uiOcrSetPickedWindow(NULL);
                 assert(strcmp(IupGetAttribute(addBtn, "ACTIVE"),
@@ -532,7 +553,7 @@ int main(void) {
             // Restore the field the negative cases damaged and populate
             // an enabled config (the startup restore path from
             // ocr_config.txt).
-            strcpy(cfg.rules[0].keywords, "仓库");
+            strcpy(cfg.groups[0].members[0].keywords, "仓库");
             cfg.enabled = TRUE;
             assert(uiOcrPopulate(&cfg));
 
@@ -593,25 +614,28 @@ int main(void) {
         memset(&hooks, 0, sizeof(hooks));
         hooks.onLoss = appCountingLoss;
 
-        // A strict-valid config needs keywords on every rule; a draft
-        // (empty keywords) must be refused at the app layer too, even
-        // though the widget draft gate tolerates it.
+        // A strict-valid config needs non-empty keywords on every group
+        // member; an empty-keywords single-member group must be refused
+        // at the app layer too (defense in depth behind the widget gate).
         memset(&ac, 0, sizeof(ac));
         strcpy(ac.exeName, "fixture.exe");
         strcpy(ac.windowTitle, "Fixture");
         ac.intervalMs = 500;
         ac.changeDetect = TRUE;
         ac.enabled = TRUE;
-        ac.ruleCount = 1;
-        strcpy(ac.rules[0].name, "status");
+        ac.regionCount = 1;
+        ac.groupCount = 1;
+        strcpy(ac.regions[0].name, "status");
         // keywords intentionally left empty
-        ac.rules[0].edge = OCR_EDGE_DISAPPEAR;
-        ac.rules[0].confirmFrames = 2;
-        ac.rules[0].lossPercent = 95;
-        ac.rules[0].norm.x = 0.0;
-        ac.rules[0].norm.y = 0.9;
-        ac.rules[0].norm.w = 0.5;
-        ac.rules[0].norm.h = 0.08;
+        ac.regions[0].norm.x = 0.0;
+        ac.regions[0].norm.y = 0.9;
+        ac.regions[0].norm.w = 0.5;
+        ac.regions[0].norm.h = 0.08;
+        ac.groups[0].edge = OCR_EDGE_DISAPPEAR;
+        ac.groups[0].confirmFrames = 2;
+        ac.groups[0].lossPercent = 95;
+        ac.groups[0].memberCount = 1;
+        ac.groups[0].members[0].regionIndex = 0;
 
         g_appLossCalls = 0;
         g_appFactoryCalls = 0;
@@ -625,7 +649,7 @@ int main(void) {
         // fails: start fails closed, the loss applier never fires and
         // the header-only timeline of a run that never started is
         // removed rather than left behind.
-        strcpy(ac.rules[0].keywords, "仓库");
+        strcpy(ac.groups[0].members[0].keywords, "仓库");
         HWND fw = CreateWindowExW(WS_EX_APPWINDOW, L"Static",
             L"app engine fail fixture",
             WS_OVERLAPPEDWINDOW | WS_VISIBLE,

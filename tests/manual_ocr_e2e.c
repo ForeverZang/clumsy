@@ -5,8 +5,8 @@
 // ocrAppStart run against its window (PrintWindow capture + RapidOCR
 // engine + real worker thread), pumps events on this thread while the
 // fixture plays the script, then verifies the timeline CSV:
-//   one  0 -> 95 change (rule:status-bar, 仓库 disappears)
-//   one 95 -> 50 change (rule:reconnect, 重连 appears)
+//   one  0 -> 95 change (group:1, 仓库 disappears)
+//   one 95 -> 50 change (group:2, 重连 appears)
 //   complete lifecycle rows and OCR text columns.
 //
 // Usage: manual_ocr_e2e [fixture.exe] [modelsDir]
@@ -79,27 +79,34 @@ static OcrConfig makeCfg(void) {
     c.intervalMs = 500;
     c.changeDetect = TRUE;
     c.enabled = TRUE;
-    c.ruleCount = 2;
+    c.regionCount = 2;
+    c.groupCount = 2;
 
-    strcpy(c.rules[0].name, "status-bar");
-    strcpy(c.rules[0].keywords, "仓库");
-    c.rules[0].edge = OCR_EDGE_DISAPPEAR;
-    c.rules[0].confirmFrames = 2;
-    c.rules[0].lossPercent = 95;
-    c.rules[0].norm.x = 0.58;
-    c.rules[0].norm.y = 0.78;
-    c.rules[0].norm.w = 0.40;
-    c.rules[0].norm.h = 0.20;
+    strcpy(c.regions[0].name, "status-bar");
+    c.regions[0].norm.x = 0.58;
+    c.regions[0].norm.y = 0.78;
+    c.regions[0].norm.w = 0.40;
+    c.regions[0].norm.h = 0.20;
 
-    strcpy(c.rules[1].name, "reconnect");
-    strcpy(c.rules[1].keywords, "重连");
-    c.rules[1].edge = OCR_EDGE_APPEAR;
-    c.rules[1].confirmFrames = 2;
-    c.rules[1].lossPercent = 50;
-    c.rules[1].norm.x = 0.26;
-    c.rules[1].norm.y = 0.34;
-    c.rules[1].norm.w = 0.50;
-    c.rules[1].norm.h = 0.30;
+    strcpy(c.regions[1].name, "reconnect");
+    c.regions[1].norm.x = 0.26;
+    c.regions[1].norm.y = 0.34;
+    c.regions[1].norm.w = 0.50;
+    c.regions[1].norm.h = 0.30;
+
+    c.groups[0].edge = OCR_EDGE_DISAPPEAR;
+    c.groups[0].confirmFrames = 2;
+    c.groups[0].lossPercent = 95;
+    c.groups[0].memberCount = 1;
+    c.groups[0].members[0].regionIndex = 0;
+    strcpy(c.groups[0].members[0].keywords, "仓库");
+
+    c.groups[1].edge = OCR_EDGE_APPEAR;
+    c.groups[1].confirmFrames = 2;
+    c.groups[1].lossPercent = 50;
+    c.groups[1].memberCount = 1;
+    c.groups[1].members[0].regionIndex = 1;
+    strcpy(c.groups[1].members[0].keywords, "重连");
     return c;
 }
 
@@ -185,23 +192,23 @@ int main(int argc, char **argv) {
     const char *stopRow = strstr(csv, "session_stop,,,,,,manual_stop,");
     const char *initRow = strstr(csv,
         "loss_change,,,,,0,initial_slider,");
-    const char *r95 = strstr(csv, "loss_change,status-bar,,,disappear,95,rule:status-bar,");
-    const char *r50 = strstr(csv, "loss_change,reconnect,,,appear,50,rule:reconnect,");
+    const char *r95 = strstr(csv, "loss_change,group 1,,,disappear,95,group:1,");
+    const char *r50 = strstr(csv, "loss_change,group 2,,,appear,50,group:2,");
     if (!startRow || !stopRow || !initRow || !r95 || !r50) {
         printf("FAIL: lifecycle/rule rows incomplete:\n%s\n", csv);
         return 1;
     }
-    // Each rule fires once: one trigger row and one gear row per region.
+    // Each group fires once: one trigger row and one gear row per group.
     // (Both rows carry loss+source, so anchor on the event name.)
-    if (countSubstr(csv, "rule_trigger,status-bar,") != 1
-        || countSubstr(csv, "loss_change,status-bar,") != 1
-        || countSubstr(csv, "rule_trigger,reconnect,") != 1
-        || countSubstr(csv, "loss_change,reconnect,") != 1) {
+    if (countSubstr(csv, "rule_trigger,group 1,") != 1
+        || countSubstr(csv, "loss_change,group 1,") != 1
+        || countSubstr(csv, "rule_trigger,group 2,") != 1
+        || countSubstr(csv, "loss_change,group 2,") != 1) {
         printf("FAIL: rule rows not fired exactly once\n%s\n", csv);
         return 1;
     }
     // The appear trigger carries the recognized text "重连" (UTF-8).
-    if (!strstr(csv, "rule_trigger,reconnect,\xE9\x87\x8D\xE8\xBF\x9E")) {
+    if (!strstr(csv, "rule_trigger,group 2,\xE9\x87\x8D\xE8\xBF\x9E")) {
         printf("FAIL: reconnect trigger lacks OCR text\n%s\n", csv);
         return 1;
     }

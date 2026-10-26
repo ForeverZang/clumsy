@@ -28,7 +28,11 @@
 #define OCR_DEL_W        52
 #define OCR_FIELD_H      24
 
-// One rule row. Column labels live only in the header; rows are created
+// One interim rule row. Task 2 boundary adapter: each row stands for
+// region i plus a single-member group i referencing it (the legacy
+// 1-region/1-rule shape and migrated configs are exactly that). The
+// fixed-height region/group tables in Task 3 replace this and add real
+// AND groups. Column labels live only in the header; rows are created
 // and destroyed at runtime and are never i18n-bound.
 typedef struct {
     Ihandle *box;
@@ -39,10 +43,6 @@ typedef struct {
     Ihandle *loss;
     Ihandle *del;
     NormRect norm;
-    // TRUE for an unfinished region just dragged in: empty keywords
-    // are tolerated at collection (the row is inert), but Start's
-    // strict ocrConfigValidate gate still refuses them.
-    BOOL draft;
 } OcrRow;
 
 static Icallback g_actionCb = NULL;
@@ -55,7 +55,7 @@ static Ihandle *g_windowLabel, *g_chooseBtn, *g_addBtn;
 static Ihandle *g_ruleBox, *g_interval, *g_changeToggle;
 static Ihandle *g_startBtn, *g_errorLabel;
 
-static OcrRow g_rows[OCR_CONFIG_RULES_MAX];
+static OcrRow g_rows[OCR_MAX_REGIONS];
 static size_t g_rowCount = 0;
 
 static char g_appExe[128] = "";
@@ -182,10 +182,13 @@ static Ihandle *labelBound(const char *key) {
     return lbl;
 }
 
-static void addRuleRow(const OcrRule *rule) {
+// Interim adapter row from one region and one single-member group. A
+// NULL region/group side yields blank/default fields; collection always
+// re-emits the parallel region i + group i shape.
+static void addRuleRow(const OcrRegionDef *region, const OcrGroup *group) {
     OcrRow *r;
     char value[16];
-    if (g_rowCount >= OCR_CONFIG_RULES_MAX) return;
+    if (g_rowCount >= OCR_MAX_REGIONS) return;
     r = &g_rows[g_rowCount++];
     memset(r, 0, sizeof(*r));
 
@@ -213,17 +216,23 @@ static void addRuleRow(const OcrRule *rule) {
     IupSetAttribute(r->del, "RASTERSIZE", rs);
     IupSetCallback(r->del, "ACTION", (Icallback)deleteRowCb);
 
-    IupStoreAttribute(r->name, "VALUE", rule->name);
-    IupStoreAttribute(r->keywords, "VALUE", rule->keywords);
+    IupStoreAttribute(r->name, "VALUE", region ? region->name : "");
+    IupStoreAttribute(r->keywords,
+                      "VALUE",
+                      (group && group->memberCount >= 1)
+                          ? group->members[0].keywords
+                          : "");
     IupStoreAttribute(r->edge, "VALUE",
-                      rule->edge == OCR_EDGE_DISAPPEAR ? "2" : "1");
+                      (group && group->edge == OCR_EDGE_DISAPPEAR)
+                          ? "2" : "1");
     // Render the value verbatim: an invalid 0 must survive populate so
-    // collection refuses it. Task 9's add-row path passes a pre-filled 2.
-    snprintf(value, sizeof(value), "%d", rule->confirmFrames);
+    // collection refuses it. The add-region path passes a pre-filled 2.
+    snprintf(value, sizeof(value), "%d", group ? group->confirmFrames : 0);
     IupStoreAttribute(r->frames, "VALUE", value);
-    snprintf(value, sizeof(value), "%d", rule->lossPercent);
+    snprintf(value, sizeof(value), "%d",
+             group ? group->lossPercent : 95);
     IupStoreAttribute(r->loss, "VALUE", value);
-    r->norm = rule->norm;
+    r->norm = region ? region->norm : (NormRect){ 0, 0, 0, 0 };
 
     r->box = IupHbox(r->name, r->keywords, r->edge,
                      r->frames, r->loss, r->del, NULL);
@@ -243,21 +252,26 @@ static void addRuleRow(const OcrRule *rule) {
     IupRefresh(g_ruleBox);
 }
 
-// Append a freshly dragged region as a placeholder rule the user then
-// fills in. Defaults follow the design: DISAPPEAR / 2 frames / 95% are
-// NOT auto-armed, because the empty keywords fail Start validation.
+// Append a freshly dragged region as a placeholder region + single-member
+// group the user then fills in. Defaults follow the design: DISAPPEAR /
+// 2 frames / 95%, and empty keywords fail validation until the user
+// types them, so the row can never trigger on its own.
 static BOOL addRegionFromNorm(const NormRect *norm) {
-    OcrRule rule;
-    if (norm == NULL || g_rowCount >= OCR_CONFIG_RULES_MAX) return FALSE;
-    memset(&rule, 0, sizeof(rule));
+    OcrRegionDef region;
+    OcrGroup group;
+    if (norm == NULL || g_rowCount >= OCR_MAX_REGIONS) return FALSE;
+    memset(&region, 0, sizeof(region));
+    memset(&group, 0, sizeof(group));
     g_regionSeq++;
-    snprintf(rule.name, sizeof(rule.name), "Region %u", g_regionSeq);
-    rule.edge = OCR_EDGE_DISAPPEAR;
-    rule.confirmFrames = 2;
-    rule.lossPercent = 95;
-    rule.norm = *norm;
-    addRuleRow(&rule);
-    g_rows[g_rowCount - 1].draft = TRUE;
+    snprintf(region.name, sizeof(region.name), "Region %u", g_regionSeq);
+    region.norm = *norm;
+    group.edge = OCR_EDGE_DISAPPEAR;
+    group.confirmFrames = 2;
+    group.lossPercent = 95;
+    // The row becomes parallel index g_rowCount when appended.
+    group.memberCount = 1;
+    group.members[0].regionIndex = (int)g_rowCount;
+    addRuleRow(&region, &group);
     return TRUE;
 }
 
@@ -363,43 +377,47 @@ static int addRegionCb(Ihandle *ih) {
 // config collection / population
 // ---------------------------------------------------------------------------
 
-static BOOL collectRow(size_t i, OcrRule *out) {
+// Collect row i into the interim parallel shape: region i plus one
+// single-member group i referencing it.
+static BOOL collectRow(size_t i, OcrRegionDef *regionOut,
+                       OcrGroup *groupOut) {
     const OcrRow *r = &g_rows[i];
     const char *text;
     int frames, loss;
     int edgeItem;
 
     text = IupGetAttribute(r->name, "VALUE");
-    copyField(out->name, sizeof(out->name), text);
+    copyField(regionOut->name, sizeof(regionOut->name), text);
+    regionOut->norm = r->norm;
+
     text = IupGetAttribute(r->keywords, "VALUE");
-    copyField(out->keywords, sizeof(out->keywords), text);
+    copyField(groupOut->members[0].keywords,
+              sizeof(groupOut->members[0].keywords), text);
+    groupOut->memberCount = 1;
+    groupOut->members[0].regionIndex = (int)i;
     edgeItem = IupGetInt(r->edge, "VALUE");
-    out->edge = edgeItem == 2 ? OCR_EDGE_DISAPPEAR : OCR_EDGE_APPEAR;
+    groupOut->edge = edgeItem == 2 ? OCR_EDGE_DISAPPEAR : OCR_EDGE_APPEAR;
 
     if (!parseStrictInt(IupGetAttribute(r->frames, "VALUE"), &frames)) {
         rowError(i, "ocr.error.number");
         return FALSE;
     }
     if (frames < 1) { rowError(i, "ocr.error.frames"); return FALSE; }
-    out->confirmFrames = frames;
+    groupOut->confirmFrames = frames;
 
     if (!parseStrictInt(IupGetAttribute(r->loss, "VALUE"), &loss)) {
         rowError(i, "ocr.error.number");
         return FALSE;
     }
     if (loss < 0 || loss > 100) { rowError(i, "ocr.error.loss"); return FALSE; }
-    out->lossPercent = loss;
-
-    out->norm = r->norm;
+    groupOut->lossPercent = loss;
     return TRUE;
 }
 
 BOOL uiOcrGetConfig(OcrConfig *out) {
     char err[MSG_BUFSIZE];
-    BOOL drafts[OCR_CONFIG_RULES_MAX];
     int interval;
     if (out == NULL) return FALSE;
-    memset(drafts, 0, sizeof(drafts));
     memset(out, 0, sizeof(*out));
 
     out->enabled = g_enabled;
@@ -415,19 +433,18 @@ BOOL uiOcrGetConfig(OcrConfig *out) {
     }
     out->intervalMs = interval;
 
-    if (g_rowCount > OCR_CONFIG_RULES_MAX) {
+    if (g_rowCount > OCR_MAX_REGIONS) {
         uiOcrShowError("ocr.error.row");
         return FALSE;
     }
-    out->ruleCount = g_rowCount;
+    out->regionCount = g_rowCount;
+    out->groupCount = g_rowCount;
     for (size_t i = 0; i < g_rowCount; i++) {
-        if (!collectRow(i, &out->rules[i])) return FALSE;
-        drafts[i] = g_rows[i].draft;
+        if (!collectRow(i, &out->regions[i], &out->groups[i])) return FALSE;
     }
-    if (!ocrConfigValidateDrafts(out, drafts, err)) {
-        // Keyword emptiness on finished rows and the enabled-needs-exe
-        // gate land here. Freshly dragged, unfinished rows are exempt
-        // (they stay inert); Start runs the strict gate before arming.
+    // Strict model validation: empty keywords, bad member indices and
+    // the enabled-needs-exe gate all land here.
+    if (!ocrConfigValidate(out, err)) {
         showErrorText(err);
         return FALSE;
     }
@@ -461,8 +478,20 @@ BOOL uiOcrPopulate(const OcrConfig *cfg) {
     IupSetAttribute(g_enableToggle, "VALUE", cfg->enabled ? "ON" : "OFF");
     setBodyVisible(cfg->enabled);
 
-    for (size_t i = 0; i < cfg->ruleCount && i < OCR_CONFIG_RULES_MAX; i++) {
-        addRuleRow(&cfg->rules[i]);
+    // Interim adapter: one row per group, paired with the region its
+    // first member references. Migrated configs (and everything this UI
+    // can save) are parallel single-member groups; multi-member groups
+    // are fully supported by the engine but only editable once Task 3's
+    // group tables replace these rows.
+    for (size_t i = 0; i < cfg->groupCount && i < OCR_MAX_GROUPS; i++) {
+        const OcrGroup *group = &cfg->groups[i];
+        const OcrRegionDef *region = NULL;
+        if (group->memberCount >= 1
+            && group->members[0].regionIndex >= 0
+            && (size_t)group->members[0].regionIndex < cfg->regionCount) {
+            region = &cfg->regions[group->members[0].regionIndex];
+        }
+        addRuleRow(region, group);
     }
     showErrorText("");
     return TRUE;

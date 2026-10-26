@@ -126,19 +126,24 @@ static OcrConfig makeCfg(int intervalMs) {
     c.intervalMs = intervalMs;
     c.changeDetect = TRUE;
     c.enabled = TRUE;
-    c.ruleCount = 2;
-    strcpy(c.rules[0].name, "status-bar");
-    strcpy(c.rules[0].keywords, "仓库");
-    c.rules[0].edge = OCR_EDGE_DISAPPEAR;
-    c.rules[0].confirmFrames = 2;
-    c.rules[0].lossPercent = 95;
-    c.rules[0].norm = (NormRect){ 0.58f, 0.78f, 0.40f, 0.20f };
-    strcpy(c.rules[1].name, "reconnect");
-    strcpy(c.rules[1].keywords, "重连");
-    c.rules[1].edge = OCR_EDGE_APPEAR;
-    c.rules[1].confirmFrames = 2;
-    c.rules[1].lossPercent = 50;
-    c.rules[1].norm = (NormRect){ 0.26f, 0.34f, 0.50f, 0.30f };
+    c.regionCount = 2;
+    c.groupCount = 2;
+    strcpy(c.regions[0].name, "status-bar");
+    c.regions[0].norm = (NormRect){ 0.58f, 0.78f, 0.40f, 0.20f };
+    strcpy(c.regions[1].name, "reconnect");
+    c.regions[1].norm = (NormRect){ 0.26f, 0.34f, 0.50f, 0.30f };
+    c.groups[0].edge = OCR_EDGE_DISAPPEAR;
+    c.groups[0].confirmFrames = 2;
+    c.groups[0].lossPercent = 95;
+    c.groups[0].memberCount = 1;
+    c.groups[0].members[0].regionIndex = 0;
+    strcpy(c.groups[0].members[0].keywords, "仓库");
+    c.groups[1].edge = OCR_EDGE_APPEAR;
+    c.groups[1].confirmFrames = 2;
+    c.groups[1].lossPercent = 50;
+    c.groups[1].memberCount = 1;
+    c.groups[1].members[0].regionIndex = 1;
+    strcpy(c.groups[1].members[0].keywords, "重连");
     return c;
 }
 

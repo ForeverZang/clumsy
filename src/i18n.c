@@ -177,6 +177,8 @@ static const I18nEntry g_table[] = {
                              "interval must be an integer between 200 and 60000 ms"},
     {"ocr.error.noRegions",  "请先添加至少一个识别区域",
                              "Add at least one OCR region first"},
+    {"ocr.error.noGroups",   "请先新建至少一个规则组",
+                             "Create at least one rule group first"},
     {"ocr.error.engine",     "OCR 引擎启动失败，请确认目录下 models 内模型文件完整",
                              "OCR engine failed to start; make sure the models folder next to the program is complete"},
     {"ocr.error.seed",       "初次识别没有任何区域可读取，请确认目标窗口未最小化且识别区域在窗口内",

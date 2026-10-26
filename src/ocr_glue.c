@@ -60,20 +60,18 @@ static void glueOnLoss(int percent, void *user) {
     uiOcrAppendLog(line);
 }
 
-static const char *runRegionName(int index) {
+// Groups have no display name yet; the CSV/log identity is "group N"
+// (1-based, table order), matching the session's timeline rows.
+static const char *runGroupName(int index) {
     static char fallback[16];
-    if ((size_t)index < g_runCfg.ruleCount
-        && g_runCfg.rules[index].name[0]) {
-        return g_runCfg.rules[index].name;
-    }
-    snprintf(fallback, sizeof(fallback), "r%d", index);
+    snprintf(fallback, sizeof(fallback), "group %d", index + 1);
     return fallback;
 }
 
 static void glueOnEvent(const OcrSessionEvent *ev, void *user) {
     char line[GLUE_LOG_CAP];
     (void)user;
-    const char *name = runRegionName(ev->regionIndex);
+    const char *name = runGroupName(ev->groupIndex);
 
     if (strcmp(ev->event, "rule_trigger") == 0) {
         const char *text = (ev->text && ev->text[0])
@@ -139,8 +137,8 @@ BOOL uiOcrGlueStart(int sliderPercent) {
     OcrConfig cfg;
     // Row-level invalid input already shows the inline row error.
     if (!uiOcrGetConfig(&cfg)) return FALSE;
-    if (cfg.ruleCount == 0) {
-        uiOcrShowError("ocr.error.noRegions");
+    if (cfg.groupCount == 0) {
+        uiOcrShowError("ocr.error.noGroups");
         return FALSE;
     }
 
