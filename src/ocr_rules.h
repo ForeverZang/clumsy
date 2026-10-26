@@ -8,6 +8,9 @@
  * edge-triggered per-rule state machine. No GUI, no capture, no heap.
  */
 
+#define OCR_MAX_REGIONS 16
+#define OCR_MAX_GROUPS  16
+
 typedef enum {
     OCR_EDGE_APPEAR    = 0,  // fire when keyword text appears
     OCR_EDGE_DISAPPEAR = 1   // fire when keyword text disappears
@@ -47,6 +50,28 @@ typedef enum {
     OCR_POLL_UNAVAILABLE = 2   // capture/OCR failed this tick: ignore
 } OcrPoll;
 
+// One region selected into a group: the region index plus the keywords
+// that must be found there. Keywords are comma-separated (substring OR);
+// members of one group combine with AND.
+typedef struct {
+    int  regionIndex;
+    char keywords[256];
+} OcrGroupMember;
+
+typedef struct {
+    OcrEdge        edge;
+    int            confirmFrames;   // >=1
+    int            lossPercent;     // gear to apply on trigger; 0..100
+    size_t         memberCount;
+    OcrGroupMember members[OCR_MAX_REGIONS]; // sorted by regionIndex, unique
+} OcrGroup;
+
+// One physical region's observation for a single tick.
+typedef struct {
+    BOOL        available;  // capture+OCR (or cached text) succeeded
+    const char *text;       // valid only when available
+} OcrRegionObs;
+
 void ocrRuleStateInit(OcrRuleState *st);
 
 // Arm after the first successful OCR, seeding the settled polarity.
@@ -62,11 +87,25 @@ BOOL ocrNormalizeText(const char *in, char *out, size_t cap);
 // return TRUE when any keyword is a substring of the normalized text.
 BOOL ocrRuleMatches(const OcrRule *rule, const char *rawText);
 
+// Same matching against a raw comma-separated keyword string. Used by
+// both legacy single-region rules and group members.
+BOOL ocrKeywordsMatch(const char *keywords, const char *rawText);
+
 // Advance the state machine by one OCR tick. Fires exactly once when a
-// confirmFrames run reaches the rule edge; on fire returns TRUE and
-// sets *targetPercent to rule->lossPercent. UNAVAILABLE changes
-// nothing; *targetPercent is untouched on a non-firing step.
+// confirmFrames run reaches the edge; on fire returns TRUE and sets
+// *targetPercent to lossPercent. UNAVAILABLE changes nothing;
+// *targetPercent is untouched on a non-firing step.
+BOOL ocrEdgeStep(OcrRuleState *st, OcrEdge edge, int confirmFrames,
+                 int lossPercent, OcrPoll poll, int *targetPercent);
+
+// Advance the per-rule state machine; thin wrapper over ocrEdgeStep.
 BOOL ocrRuleStep(OcrRuleState *st, const OcrRule *rule,
                  OcrPoll poll, int *targetPercent);
+
+// Synthesize one group poll from per-region observations: any member
+// region unavailable (or out of range) -> UNAVAILABLE; all available
+// and all matching -> MATCHED; otherwise MISSED.
+OcrPoll ocrGroupPoll(const OcrGroup *group, const OcrRegionObs *obs,
+                     size_t obsCount);
 
 #endif // CLUMSY_OCR_RULES_H

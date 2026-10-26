@@ -179,6 +179,97 @@ int main(void) {
     assert(!ocrRuleStep(&st, &disappear, OCR_POLL_UNAVAILABLE, &target));
     assert(target == 12345);
 
+    // --- raw keyword-string matching (shared by rules and group members) ---
+
+    // 22. Same normalization as rule keywords: OCR-inserted spaces, OR.
+    assert(ocrKeywordsMatch("重 连, 仓库", "Online 仓 库"));
+    assert(ocrKeywordsMatch("重 连, 仓库", "正在重连"));
+    assert(!ocrKeywordsMatch("重 连, 仓库", "在线 12:30"));
+    // 23. Empty / separator-only keyword strings never match.
+    assert(!ocrKeywordsMatch("", "anything"));
+    assert(!ocrKeywordsMatch(" , ，", "anything"));
+    assert(!ocrKeywordsMatch(NULL, "anything"));
+
+    // --- group poll synthesis: members are AND, within a member OR ---
+
+    OcrGroup g;
+    memset(&g, 0, sizeof(g));
+    g.edge = OCR_EDGE_DISAPPEAR;
+    g.confirmFrames = 2;
+    g.lossPercent = 95;
+    g.memberCount = 2;
+    g.members[0].regionIndex = 0;
+    strncpy(g.members[0].keywords, "就绪",
+            sizeof(g.members[0].keywords) - 1);
+    g.members[1].regionIndex = 1;
+    strncpy(g.members[1].keywords, "仓库",
+            sizeof(g.members[1].keywords) - 1);
+
+    OcrRegionObs obs[2];
+    memset(obs, 0, sizeof(obs));
+
+    // 24. All members available and all match -> MATCHED.
+    obs[0].available = TRUE; obs[0].text = "系统就绪";
+    obs[1].available = TRUE; obs[1].text = "仓库 A";
+    assert(ocrGroupPoll(&g, obs, 2) == OCR_POLL_MATCHED);
+
+    // 25. Either member misses -> MISSED (both directions).
+    obs[0].text = "系统繁忙";
+    assert(ocrGroupPoll(&g, obs, 2) == OCR_POLL_MISSED);
+    obs[0].text = "系统就绪";
+    obs[1].text = "队列空";
+    assert(ocrGroupPoll(&g, obs, 2) == OCR_POLL_MISSED);
+
+    // 26. Either member unavailable -> UNAVAILABLE, never a miss.
+    obs[1].available = FALSE; obs[1].text = NULL;
+    assert(ocrGroupPoll(&g, obs, 2) == OCR_POLL_UNAVAILABLE);
+    obs[1].available = TRUE; obs[1].text = "仓库 A";
+    obs[0].available = FALSE; obs[0].text = NULL;
+    assert(ocrGroupPoll(&g, obs, 2) == OCR_POLL_UNAVAILABLE);
+
+    // 27. A member index outside the observation set reads unavailable.
+    obs[0].available = TRUE; obs[0].text = "系统就绪";
+    g.members[1].regionIndex = 5;
+    assert(ocrGroupPoll(&g, obs, 2) == OCR_POLL_UNAVAILABLE);
+    g.members[1].regionIndex = 1;
+
+    // --- group state machine via ocrEdgeStep ---
+
+    // 28. DISAPPEAR, armed present: one miss does not fire; an
+    //     unavailable tick freezes the run at 1; the next miss fires.
+    ocrRuleStateInit(&st);
+    ocrRuleArm(&st, TRUE);
+    target = -1;
+    assert(!ocrEdgeStep(&st, OCR_EDGE_DISAPPEAR, 2, 95,
+                        OCR_POLL_MISSED, &target));
+    assert(target == -1 && st.run == 1);
+    assert(!ocrEdgeStep(&st, OCR_EDGE_DISAPPEAR, 2, 95,
+                        OCR_POLL_UNAVAILABLE, &target));
+    assert(target == -1 && st.run == 1);
+    assert(ocrEdgeStep(&st, OCR_EDGE_DISAPPEAR, 2, 95,
+                       OCR_POLL_MISSED, &target));
+    assert(target == 95);
+
+    // 29. APPEAR N=2 through the extracted stepper.
+    ocrRuleStateInit(&st);
+    ocrRuleArm(&st, FALSE);
+    assert(!ocrEdgeStep(&st, OCR_EDGE_APPEAR, 2, 50,
+                        OCR_POLL_MATCHED, &target));
+    assert(ocrEdgeStep(&st, OCR_EDGE_APPEAR, 2, 50,
+                       OCR_POLL_MATCHED, &target));
+    assert(target == 50);
+
+    // 30. Unarmed group: even a full truth-table run never triggers.
+    ocrRuleStateInit(&st);
+    target = -77;
+    for (int i = 0; i < 5; i++) {
+        assert(!ocrEdgeStep(&st, OCR_EDGE_DISAPPEAR, 1, 95,
+                            OCR_POLL_MISSED, &target));
+        assert(!ocrEdgeStep(&st, OCR_EDGE_APPEAR, 1, 50,
+                            OCR_POLL_MATCHED, &target));
+    }
+    assert(target == -77); // never touched while unarmed
+
     printf("OK: ocr_rules\n");
     return 0;
 }

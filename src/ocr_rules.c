@@ -102,17 +102,17 @@ static BOOL nextKeyword(char *tokens, char **cursor, char *keyword, size_t cap) 
     return TRUE;
 }
 
-BOOL ocrRuleMatches(const OcrRule *rule, const char *rawText) {
-    if (!rule || !rawText) return FALSE;
+BOOL ocrKeywordsMatch(const char *keywords, const char *rawText) {
+    if (!keywords || !rawText) return FALSE;
 
     char text[512];
     if (!ocrNormalizeText(rawText, text, sizeof(text))) {
         return FALSE; // whitespace-only OCR frame cannot match
     }
 
-    // Mutable token buffer: keywords field is bounded at 256 bytes.
+    // Mutable token buffer: keyword strings are bounded at 256 bytes.
     char tokens[256];
-    strncpy(tokens, rule->keywords, sizeof(tokens) - 1);
+    strncpy(tokens, keywords, sizeof(tokens) - 1);
     tokens[sizeof(tokens) - 1] = '\0';
 
     char *cursor = tokens;
@@ -131,17 +131,22 @@ BOOL ocrRuleMatches(const OcrRule *rule, const char *rawText) {
     return FALSE;
 }
 
-BOOL ocrRuleStep(OcrRuleState *st, const OcrRule *rule,
-                 OcrPoll poll, int *targetPercent) {
-    if (!st || !rule || !st->armed) return FALSE;
+BOOL ocrRuleMatches(const OcrRule *rule, const char *rawText) {
+    if (!rule) return FALSE;
+    return ocrKeywordsMatch(rule->keywords, rawText);
+}
+
+BOOL ocrEdgeStep(OcrRuleState *st, OcrEdge edge, int confirmFrames,
+                 int lossPercent, OcrPoll poll, int *targetPercent) {
+    if (!st || !st->armed) return FALSE;
 
     if (poll == OCR_POLL_UNAVAILABLE) return FALSE;
 
     int observed = (poll == OCR_POLL_MATCHED)
                    ? OCR_STABLE_PRESENT : OCR_STABLE_ABSENT;
-    int wanted   = (rule->edge == OCR_EDGE_APPEAR)
+    int wanted   = (edge == OCR_EDGE_APPEAR)
                    ? OCR_STABLE_PRESENT : OCR_STABLE_ABSENT;
-    int opposite = (rule->edge == OCR_EDGE_APPEAR)
+    int opposite = (edge == OCR_EDGE_APPEAR)
                    ? OCR_STABLE_ABSENT : OCR_STABLE_PRESENT;
 
     // A poll agreeing with the already-settled state is just steady
@@ -169,12 +174,39 @@ BOOL ocrRuleStep(OcrRuleState *st, const OcrRule *rule,
     }
     st->run++;
 
-    int need = rule->confirmFrames >= 1 ? rule->confirmFrames : 1;
+    int need = confirmFrames >= 1 ? confirmFrames : 1;
     if (st->run < need) return FALSE;
 
-    if (targetPercent) *targetPercent = rule->lossPercent;
+    if (targetPercent) *targetPercent = lossPercent;
     st->stable    = (OcrStable)wanted;
     st->candidate = -1;
     st->run       = 0;
     return TRUE;
+}
+
+BOOL ocrRuleStep(OcrRuleState *st, const OcrRule *rule,
+                 OcrPoll poll, int *targetPercent) {
+    if (!rule) return FALSE;
+    return ocrEdgeStep(st, rule->edge, rule->confirmFrames,
+                       rule->lossPercent, poll, targetPercent);
+}
+
+OcrPoll ocrGroupPoll(const OcrGroup *group, const OcrRegionObs *obs,
+                     size_t obsCount) {
+    if (!group || !obs) return OCR_POLL_UNAVAILABLE;
+
+    for (size_t i = 0; i < group->memberCount; i++) {
+        int idx = group->members[i].regionIndex;
+        if (idx < 0 || (size_t)idx >= obsCount || !obs[idx].available) {
+            return OCR_POLL_UNAVAILABLE;
+        }
+    }
+    // All referenced regions are available: AND over member matches.
+    for (size_t i = 0; i < group->memberCount; i++) {
+        const OcrGroupMember *m = &group->members[i];
+        if (!ocrKeywordsMatch(m->keywords, obs[m->regionIndex].text)) {
+            return OCR_POLL_MISSED;
+        }
+    }
+    return OCR_POLL_MATCHED;
 }
