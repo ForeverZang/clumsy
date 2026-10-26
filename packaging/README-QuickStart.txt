@@ -1,4 +1,4 @@
-Game Traffic Controller - clumsy 0.3.1 - Quick Start
+Game Traffic Controller - clumsy 0.4.0 - Quick Start
 ==================================================
 
 [Run]
@@ -30,27 +30,52 @@ Game Traffic Controller - clumsy 0.3.1 - Quick Start
 
 [Automatic testing (OCR) - collapsible section 5 on the Basic tab]
 An optional helper for QA against YOUR OWN or authorized applications:
-clumsy watches small rectangles of a target window and switches the loss
-level automatically when configured text appears or disappears (for
-example an idle status bar vanishing while you "type", then a reconnect
-prompt appearing). Every switch is timestamped in a CSV timeline; clumsy
-makes no pass/fail judgment - you analyze the record.
-1. Pick the target application, press "Choose window" and select one of
-   its top-level windows.
-2. Press "Add region (drag)" and rubber-band rectangles directly on the
-   target window. Per region fill in: name, keywords (several separated
-   by commas; whitespace-insensitive substring match), trigger
-   (appear/disappear), confirm frames, target loss %.
-3. Start as usual. Before the first rule fires, loss stays at the
-   slider's current value; once a rule fires its gear holds until another
-   rule fires or you press Stop (manual recovery stays your decision).
+clumsy watches small rectangles of one of the target app's windows and
+switches the loss level automatically when configured text appears or
+disappears (for example an idle status bar vanishing while you "type",
+then a reconnect prompt appearing). Every switch is timestamped in a CSV
+timeline; clumsy makes no pass/fail judgment - you analyze the record.
+1. Pick the target application above, then press "Choose window...": the
+   current screen dims. With one visible app window it is highlighted
+   immediately; with several, hover to highlight each and click once to
+   lock. Only this application's own top-level windows are clickable -
+   other programs' windows can never be framed. Esc, right-click, or
+   "Cancel" exits without changes. If the target window closes during
+   selection, the picker exits with a red error and nothing is saved.
+2. Drag one or more rectangles inside the highlighted window (boxes
+   smaller than 10 px are ignored). The floating toolbar offers Undo
+   last box, Choose another window (boxes drawn this pass are dropped;
+   previously saved regions are kept), Cancel, and Done (shows the box
+   count; greyed out until at least one box exists on a fresh pick; on
+   later add-region passes you may finish with zero new boxes to keep the
+   old ones).
+3. The fixed-height "OCR regions" table lists named rectangles
+   (double-click a name to rename). The "Rule groups" table holds groups
+   of one or more members - double-click a row to edit: within a group
+   ALL member regions must match at once (AND), while comma-separated
+   keywords in one member are alternatives (OR). Per group set
+   appear/disappear, confirm frames, and target loss %. Deleting a region
+   removes it from every group and reindexes the rest; a group left
+   empty shows an inline error and Start is refused.
+4. The full-width green bar at the bottom of the window is the ONLY
+   Start entry ("Start affecting" / "Stop affecting"); with section 5
+   enabled it also runs the OCR preflight. Before the first group fires,
+   loss stays at the slider value; a fired gear holds until another group
+   fires or you press Stop. When several groups fire on the same OCR tick,
+   the first group in the table sets the gear and each fired group gets
+   its own CSV row. If one member region cannot be captured that tick,
+   the group freezes instead of firing, so one occluded or misread region
+   never triggers by itself.
 - The scrolling log shows human-readable lines; the canonical record is
   the CSV (UTF-8 BOM, opens in Excel without mojibake) under
   %LOCALAPPDATA%\clumsy\ocr-runs\ (the program folder is the fallback).
   "Open folder" selects the running CSV in Explorer.
 - Configuration persists in ocr_config.txt next to clumsy.exe; the saved
   window is re-resolved by title at Start (zero or several matches ->
-  inline red error, nothing is attached and no CSV is created).
+  inline red error, nothing is attached and no CSV is created). Configs
+  written by clumsy 0.3.1 (rule.N.* rows) migrate automatically on
+  startup and are rewritten in the new regions/groups format after the
+  first Start.
 - Known limitation (v1): capture is PrintWindow only. Minimized windows
   and some GPU-rendered / exclusive-fullscreen windows cannot be
   captured; such polls are logged "unavailable", rate-limited, and never
