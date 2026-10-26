@@ -70,9 +70,6 @@ BOOL uiOcrPickedWindow(CaptureWindow *out);
 // Test seam: flip the post-map gate (real UI flips it from MAP_CB).
 void uiOcrSetMappedForTest(BOOL mapped);
 
-// Test seam: nth rule row's container (post-map append mapping checks).
-Ihandle *uiOcrRowBoxForTest(size_t i);
-
 // Test seam: append a dragged region using the production placeholder
 // defaults (DISAPPEAR / 2 frames / 95%, "Region N"), skipping the modal
 // rubber-band overlay.
@@ -87,5 +84,8 @@ Ihandle *uiOcrBodyForTest(void);
 // Test seam: always-visible (even when the body is folded) red label that
 // explains an enable-gate refusal such as "pick a concrete application".
 Ihandle *uiOcrGateErrorForTest(void);
+// Test seam: in-body red error line (shared with the groups module via
+// its error sink).
+Ihandle *uiOcrErrorLabelForTest(void);
 
 #endif // CLUMSY_UI_OCR_H

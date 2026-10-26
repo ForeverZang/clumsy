@@ -10,6 +10,7 @@ cd "$(dirname "$0")/.."
 SIGN=${SIGN:-A} # WinDivert driver signing variant: A | B | C
 WD="external/WinDivert-2.2.0-$SIGN"
 IUP="external/iup-3.30_Win64_mingw6_lib"
+CD="external/cd-5.14_Win64_mingw6_lib"
 OCR="external/RapidOCRLite"
 OUT="build/mingw64-release"
 
@@ -19,6 +20,8 @@ echo "== compiling resources (x64 manifest, NDEBUG)"
 windres -D NDEBUG -D X64 etc/clumsy.rc -O coff -o "$OUT/clumsy_res.o"
 
 echo "== compiling + linking clumsy (gcc $(gcc -dumpversion), -O2 -mwindows)"
+# iupcontrols (IupMatrix for the OCR tables) renders through CD; the
+# static archives cross-reference each other, so one linker group.
 gcc -std=gnu11 -O2 -DNDEBUG -DCLUMSY_OCR=1 -mwindows -s \
     -Wall -Wno-unused-parameter -Wno-format \
     -I"$WD/include" \
@@ -26,11 +29,15 @@ gcc -std=gnu11 -O2 -DNDEBUG -DCLUMSY_OCR=1 -mwindows -s \
     -I"$OCR/include" \
     src/*.c \
     "$OUT/clumsy_res.o" \
+    -Wl,--start-group \
+    "$IUP/libiupcontrols.a" "$IUP/libiupcd.a" "$CD/libcd.a" \
+    "$IUP/libftgl.a" "$IUP/libfreetype6.a" "$IUP/libz.a" \
     "$IUP/libiup.a" \
+    -Wl,--end-group \
     "$WD/x64/WinDivert.dll" \
     "$OCR/bin/x64/rapidocrlite.dll" \
-    -lcomctl32 -lwinmm -lws2_32 -lgdi32 -lcomdlg32 -lshell32 -luuid -lole32 \
-    -liphlpapi \
+    -lcomctl32 -lwinmm -lws2_32 -lgdi32 -luser32 -lmsimg32 -lgdiplus \
+    -lusp10 -lcomdlg32 -lshell32 -luuid -lole32 -liphlpapi \
     -o "$OUT/clumsy.exe"
 
 echo "== copying runtime files"

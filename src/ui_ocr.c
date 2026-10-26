@@ -8,6 +8,7 @@
 #include "common.h"
 #include "i18n.h"
 #include "ui_ocr.h"
+#include "ui_ocr_groups.h"
 #include "ui_picker.h"
 
 #if defined(CLUMSY_OCR)
@@ -16,35 +17,6 @@
 #define OCR_MIN_INTERVAL_MS 200
 #define OCR_MAX_INTERVAL_MS 60000
 
-// Fixed column widths keep the rule rows from stretching the dialog
-// past the folded width (plan Task 8 visual acceptance). The header row
-// uses the same widths/gap so columns line up.
-#define OCR_COL_GAP      "4"
-#define OCR_NAME_W       84
-#define OCR_KW_W         170
-#define OCR_EDGE_W       156
-#define OCR_FRAMES_W     44
-#define OCR_LOSS_W       48
-#define OCR_DEL_W        52
-#define OCR_FIELD_H      24
-
-// One interim rule row. Task 2 boundary adapter: each row stands for
-// region i plus a single-member group i referencing it (the legacy
-// 1-region/1-rule shape and migrated configs are exactly that). The
-// fixed-height region/group tables in Task 3 replace this and add real
-// AND groups. Column labels live only in the header; rows are created
-// and destroyed at runtime and are never i18n-bound.
-typedef struct {
-    Ihandle *box;
-    Ihandle *name;
-    Ihandle *keywords;
-    Ihandle *edge;
-    Ihandle *frames;
-    Ihandle *loss;
-    Ihandle *del;
-    NormRect norm;
-} OcrRow;
-
 static Icallback g_actionCb = NULL;
 static OcrLossApplier g_lossApplier = NULL;
 static OcrLayoutChangedFn g_layoutChanged = NULL;
@@ -52,11 +24,8 @@ static BOOL g_uiMapped = FALSE;
 
 static Ihandle *g_frame, *g_enableToggle, *g_body, *g_gateError;
 static Ihandle *g_windowLabel, *g_chooseBtn, *g_addBtn;
-static Ihandle *g_ruleBox, *g_interval, *g_changeToggle;
+static Ihandle *g_interval, *g_changeToggle;
 static Ihandle *g_startBtn, *g_errorLabel;
-
-static OcrRow g_rows[OCR_MAX_REGIONS];
-static size_t g_rowCount = 0;
 
 static char g_appExe[128] = "";
 static char g_windowTitle[256] = "";
@@ -68,7 +37,6 @@ static BOOL g_enabled = FALSE;
 static BOOL g_running = FALSE;
 static BOOL g_hasPicked = FALSE;
 static HWND g_pickedHwnd = NULL;
-static unsigned g_regionSeq = 0;
 
 // ---------------------------------------------------------------------------
 // small helpers
@@ -133,13 +101,6 @@ static void syncStartActive(void) {
     }
 }
 
-static void rowError(size_t idx, const char *key) {
-    char msg[MSG_BUFSIZE];
-    snprintf(msg, sizeof(msg), tr("ocr.error.row"),
-             (unsigned)(idx + 1), tr(key));
-    showErrorText(msg);
-}
-
 static void refreshWindowLabel(void) {
     IupStoreAttribute(g_windowLabel, "TITLE",
                       g_windowTitle[0] != '\0' ? g_windowTitle
@@ -148,139 +109,17 @@ static void refreshWindowLabel(void) {
                     g_windowTitle[0] != '\0' ? "0 0 0" : "110 110 110");
 }
 
-// Choose needs a concrete app context; Add region needs a window picked
-// this session. A running session freezes both (uiOcrSetRunning).
+// Choose needs a concrete app context. The region add button lives in
+// the groups module (region frame) and combines this picked-window gate
+// with the running flag and the 16-region cap.
 static void refreshPickerButtons(void) {
-    if (g_chooseBtn == NULL || g_addBtn == NULL) return;
+    if (g_chooseBtn == NULL) return;
     IupSetAttribute(g_chooseBtn, "ACTIVE",
                     (!g_running && g_appExe[0] != '\0') ? "YES" : "NO");
-    IupSetAttribute(g_addBtn, "ACTIVE",
-                    (!g_running && g_hasPicked) ? "YES" : "NO");
 }
 
-// ---------------------------------------------------------------------------
-// rule rows
-// ---------------------------------------------------------------------------
-
-static int deleteRowCb(Ihandle *ih) {
-    for (size_t i = 0; i < g_rowCount; i++) {
-        if (g_rows[i].del != ih) continue;
-        IupDestroy(g_rows[i].box);
-        for (size_t j = i; j + 1 < g_rowCount; j++) {
-            g_rows[j] = g_rows[j + 1];
-        }
-        g_rowCount--;
-        memset(&g_rows[g_rowCount], 0, sizeof(g_rows[0]));
-        return IUP_DEFAULT;
-    }
-    return IUP_DEFAULT;
-}
-
-static Ihandle *labelBound(const char *key) {
-    Ihandle *lbl = IupLabel(tr(key));
-    i18nBind(lbl, "TITLE", key);
-    return lbl;
-}
-
-// Interim adapter row from one region and one single-member group. A
-// NULL region/group side yields blank/default fields; collection always
-// re-emits the parallel region i + group i shape.
-static void addRuleRow(const OcrRegionDef *region, const OcrGroup *group) {
-    OcrRow *r;
-    char value[16];
-    if (g_rowCount >= OCR_MAX_REGIONS) return;
-    r = &g_rows[g_rowCount++];
-    memset(r, 0, sizeof(*r));
-
-    char rs[24];
-    r->name = IupText(NULL);
-    snprintf(rs, sizeof(rs), "%dx%d", OCR_NAME_W, OCR_FIELD_H);
-    IupSetAttribute(r->name, "RASTERSIZE", rs);
-    r->keywords = IupText(NULL);
-    snprintf(rs, sizeof(rs), "%dx%d", OCR_KW_W, OCR_FIELD_H);
-    IupSetAttribute(r->keywords, "RASTERSIZE", rs);
-    r->edge = IupList(NULL);
-    IupSetAttribute(r->edge, "DROPDOWN", "YES");
-    snprintf(rs, sizeof(rs), "%dx%d", OCR_EDGE_W, OCR_FIELD_H);
-    IupSetAttribute(r->edge, "RASTERSIZE", rs);
-    IupStoreAttribute(r->edge, "1", tr("ocr.edge.appear"));
-    IupStoreAttribute(r->edge, "2", tr("ocr.edge.disappear"));
-    r->frames = IupText(NULL);
-    snprintf(rs, sizeof(rs), "%dx%d", OCR_FRAMES_W, OCR_FIELD_H);
-    IupSetAttribute(r->frames, "RASTERSIZE", rs);
-    r->loss = IupText(NULL);
-    snprintf(rs, sizeof(rs), "%dx%d", OCR_LOSS_W, OCR_FIELD_H);
-    IupSetAttribute(r->loss, "RASTERSIZE", rs);
-    r->del = IupButton(tr("ocr.delete"), NULL);
-    snprintf(rs, sizeof(rs), "%dx%d", OCR_DEL_W, OCR_FIELD_H);
-    IupSetAttribute(r->del, "RASTERSIZE", rs);
-    IupSetCallback(r->del, "ACTION", (Icallback)deleteRowCb);
-
-    IupStoreAttribute(r->name, "VALUE", region ? region->name : "");
-    IupStoreAttribute(r->keywords,
-                      "VALUE",
-                      (group && group->memberCount >= 1)
-                          ? group->members[0].keywords
-                          : "");
-    IupStoreAttribute(r->edge, "VALUE",
-                      (group && group->edge == OCR_EDGE_DISAPPEAR)
-                          ? "2" : "1");
-    // Render the value verbatim: an invalid 0 must survive populate so
-    // collection refuses it. The add-region path passes a pre-filled 2.
-    snprintf(value, sizeof(value), "%d", group ? group->confirmFrames : 0);
-    IupStoreAttribute(r->frames, "VALUE", value);
-    snprintf(value, sizeof(value), "%d",
-             group ? group->lossPercent : 95);
-    IupStoreAttribute(r->loss, "VALUE", value);
-    r->norm = region ? region->norm : (NormRect){ 0, 0, 0, 0 };
-
-    r->box = IupHbox(r->name, r->keywords, r->edge,
-                     r->frames, r->loss, r->del, NULL);
-    IupSetAttribute(r->box, "GAP", OCR_COL_GAP);
-    IupAppend(g_ruleBox, r->box);
-    // A child appended to a mapped dialog must be mapped explicitly or
-    // it takes layout space but paints blank. Gate on the dialog's native
-    // handle, not g_uiMapped: vbox/frame composition nodes never get a
-    // WID themselves, config populate can run while the test seam's
-    // mapped flag is already set, and before uiOcrCreate's frame is
-    // inserted into a dialog IupGetDialog returns NULL (pre-map path).
-    {
-        Ihandle *dlg = IupGetDialog(g_ruleBox);
-        if (dlg != NULL && IupGetAttribute(dlg, "WID") != NULL)
-            IupMap(r->box);
-    }
-    IupRefresh(g_ruleBox);
-}
-
-// Append a freshly dragged region as a placeholder region + single-member
-// group the user then fills in. Defaults follow the design: DISAPPEAR /
-// 2 frames / 95%, and empty keywords fail validation until the user
-// types them, so the row can never trigger on its own.
-static BOOL addRegionFromNorm(const NormRect *norm) {
-    OcrRegionDef region;
-    OcrGroup group;
-    if (norm == NULL || g_rowCount >= OCR_MAX_REGIONS) return FALSE;
-    memset(&region, 0, sizeof(region));
-    memset(&group, 0, sizeof(group));
-    g_regionSeq++;
-    snprintf(region.name, sizeof(region.name), "Region %u", g_regionSeq);
-    region.norm = *norm;
-    group.edge = OCR_EDGE_DISAPPEAR;
-    group.confirmFrames = 2;
-    group.lossPercent = 95;
-    // The row becomes parallel index g_rowCount when appended.
-    group.memberCount = 1;
-    group.members[0].regionIndex = (int)g_rowCount;
-    addRuleRow(&region, &group);
-    return TRUE;
-}
-
-static void clearRows(void) {
-    for (size_t i = 0; i < g_rowCount; i++) {
-        IupDestroy(g_rows[i].box);
-    }
-    g_rowCount = 0;
-    memset(g_rows, 0, sizeof(g_rows));
+static BOOL pickedWindowGate(void) {
+    return g_hasPicked;
 }
 
 // ---------------------------------------------------------------------------
@@ -351,9 +190,10 @@ static int chooseWindowCb(Ihandle *ih) {
     return IUP_DEFAULT;
 }
 
-// "Add region": rubber-band on the picked window, then append a
-// placeholder row. The button is disabled without a picked window, so
-// the guards only defend against stale windows.
+// "Add region": rubber-band on the picked window, then append a region
+// to the table's model (groups are built separately via New group). The
+// button is disabled without a picked window, so the guards only defend
+// against stale windows.
 static int addRegionCb(Ihandle *ih) {
     NormRect norm;
     UNREFERENCED_PARAMETER(ih);
@@ -365,10 +205,10 @@ static int addRegionCb(Ihandle *ih) {
     // FALSE covers user cancel (ESC / right-click) and an undersized drag
     // (the overlay lets the user try again, so it simply returns there).
     if (!uiPickerPickRect(g_pickedHwnd, &norm)) return IUP_DEFAULT;
-    if (!addRegionFromNorm(&norm)) return IUP_DEFAULT;
+    if (!uiOcrGroupsAppendRegions(&norm, 1)) return IUP_DEFAULT;
     showErrorText("");
-    // The new row grows the body's natural size post-map; re-fit the
-    // RESIZE=NO dialog exactly like a fold/expand does.
+    // The tables are fixed-height, but keep the single host refit path
+    // consistent with every other post-map body change.
     if (g_uiMapped && g_layoutChanged != NULL) g_layoutChanged();
     return IUP_DEFAULT;
 }
@@ -376,43 +216,6 @@ static int addRegionCb(Ihandle *ih) {
 // ---------------------------------------------------------------------------
 // config collection / population
 // ---------------------------------------------------------------------------
-
-// Collect row i into the interim parallel shape: region i plus one
-// single-member group i referencing it.
-static BOOL collectRow(size_t i, OcrRegionDef *regionOut,
-                       OcrGroup *groupOut) {
-    const OcrRow *r = &g_rows[i];
-    const char *text;
-    int frames, loss;
-    int edgeItem;
-
-    text = IupGetAttribute(r->name, "VALUE");
-    copyField(regionOut->name, sizeof(regionOut->name), text);
-    regionOut->norm = r->norm;
-
-    text = IupGetAttribute(r->keywords, "VALUE");
-    copyField(groupOut->members[0].keywords,
-              sizeof(groupOut->members[0].keywords), text);
-    groupOut->memberCount = 1;
-    groupOut->members[0].regionIndex = (int)i;
-    edgeItem = IupGetInt(r->edge, "VALUE");
-    groupOut->edge = edgeItem == 2 ? OCR_EDGE_DISAPPEAR : OCR_EDGE_APPEAR;
-
-    if (!parseStrictInt(IupGetAttribute(r->frames, "VALUE"), &frames)) {
-        rowError(i, "ocr.error.number");
-        return FALSE;
-    }
-    if (frames < 1) { rowError(i, "ocr.error.frames"); return FALSE; }
-    groupOut->confirmFrames = frames;
-
-    if (!parseStrictInt(IupGetAttribute(r->loss, "VALUE"), &loss)) {
-        rowError(i, "ocr.error.number");
-        return FALSE;
-    }
-    if (loss < 0 || loss > 100) { rowError(i, "ocr.error.loss"); return FALSE; }
-    groupOut->lossPercent = loss;
-    return TRUE;
-}
 
 BOOL uiOcrGetConfig(OcrConfig *out) {
     char err[MSG_BUFSIZE];
@@ -433,17 +236,10 @@ BOOL uiOcrGetConfig(OcrConfig *out) {
     }
     out->intervalMs = interval;
 
-    if (g_rowCount > OCR_MAX_REGIONS) {
-        uiOcrShowError("ocr.error.row");
-        return FALSE;
-    }
-    out->regionCount = g_rowCount;
-    out->groupCount = g_rowCount;
-    for (size_t i = 0; i < g_rowCount; i++) {
-        if (!collectRow(i, &out->regions[i], &out->groups[i])) return FALSE;
-    }
-    // Strict model validation: empty keywords, bad member indices and
-    // the enabled-needs-exe gate all land here.
+    uiOcrGroupsGetModel(out->regions, &out->regionCount,
+                        out->groups, &out->groupCount);
+    // Strict model validation: empty groups, bad member indices and the
+    // enabled-needs-exe gate all land here.
     if (!ocrConfigValidate(out, err)) {
         showErrorText(err);
         return FALSE;
@@ -455,16 +251,13 @@ BOOL uiOcrGetConfig(OcrConfig *out) {
 BOOL uiOcrPopulate(const OcrConfig *cfg) {
     char value[16];
     if (cfg == NULL) return FALSE;
-    clearRows();
 
     copyField(g_windowTitle, sizeof(g_windowTitle), cfg->windowTitle);
     refreshWindowLabel();
-    // Populate is a load/reset: the session-local hand pick is dropped,
-    // and dragged-region numbering starts over ("Region 1").
+    // Populate is a load/reset: the session-local hand pick is dropped.
     g_hasPicked = FALSE;
     g_pickedHwnd = NULL;
     memset(&g_pickedWindow, 0, sizeof(g_pickedWindow));
-    g_regionSeq = 0;
     refreshPickerButtons();
 
     snprintf(value, sizeof(value), "%d",
@@ -478,21 +271,11 @@ BOOL uiOcrPopulate(const OcrConfig *cfg) {
     IupSetAttribute(g_enableToggle, "VALUE", cfg->enabled ? "ON" : "OFF");
     setBodyVisible(cfg->enabled);
 
-    // Interim adapter: one row per group, paired with the region its
-    // first member references. Migrated configs (and everything this UI
-    // can save) are parallel single-member groups; multi-member groups
-    // are fully supported by the engine but only editable once Task 3's
-    // group tables replace these rows.
-    for (size_t i = 0; i < cfg->groupCount && i < OCR_MAX_GROUPS; i++) {
-        const OcrGroup *group = &cfg->groups[i];
-        const OcrRegionDef *region = NULL;
-        if (group->memberCount >= 1
-            && group->members[0].regionIndex >= 0
-            && (size_t)group->members[0].regionIndex < cfg->regionCount) {
-            region = &cfg->regions[group->members[0].regionIndex];
-        }
-        addRuleRow(region, group);
-    }
+    // The region/group tables own the model verbatim: multi-member AND
+    // groups, empty groups (rendered red) and unreferenced regions all
+    // round-trip; strict collection decides whether Start is allowed.
+    uiOcrGroupsSetModel(cfg->regions, cfg->regionCount,
+                        cfg->groups, cfg->groupCount);
     showErrorText("");
     return TRUE;
 }
@@ -538,6 +321,7 @@ void uiOcrSetPickedWindow(const CaptureWindow *win) {
     }
     refreshWindowLabel();
     refreshPickerButtons();
+    uiOcrGroupsRefresh();
 }
 
 const char *uiOcrSavedWindowTitle(void) {
@@ -571,9 +355,9 @@ void uiOcrSetRunning(BOOL running) {
     } else {
         syncStartActive();
     }
-    // While running both picker buttons are frozen; on stop they return
-    // to the context-derived states (choose needs the app, add needs a
-    // picked window).
+    // While running the tables and both picker buttons freeze; on stop
+    // they return to their gate-derived states.
+    uiOcrGroupsSetRunning(running);
     refreshPickerButtons();
     IupStoreAttribute(g_startBtn, "TITLE",
                       running ? tr("ocr.stop") : tr("ocr.start"));
@@ -589,12 +373,7 @@ void uiOcrShowError(const char *keyOrText) {
 
 void uiOcrRetranslate(void) {
     refreshWindowLabel();
-    for (size_t i = 0; i < g_rowCount; i++) {
-        OcrRow *r = &g_rows[i];
-        IupStoreAttribute(r->edge, "1", tr("ocr.edge.appear"));
-        IupStoreAttribute(r->edge, "2", tr("ocr.edge.disappear"));
-        IupStoreAttribute(r->del, "TITLE", tr("ocr.delete"));
-    }
+    uiOcrGroupsRetranslate();
     IupStoreAttribute(g_startBtn, "TITLE",
                       g_running ? tr("ocr.stop") : tr("ocr.start"));
     if (g_gateError != NULL && IupGetInt(g_gateError, "VISIBLE") != 0) {
@@ -623,43 +402,6 @@ static Ihandle *buildWindowRow(void) {
     return IupHbox(lbl, g_windowLabel, g_chooseBtn, NULL);
 }
 
-// Header column label: i18n-bound, pinned to the matching field width so
-// header and rows share one grid.
-static Ihandle *headerLabel(const char *key, int width) {
-    Ihandle *lbl = labelBound(key);
-    char rs[24];
-    snprintf(rs, sizeof(rs), "%dx14", width);
-    IupSetAttribute(lbl, "RASTERSIZE", rs);
-    return lbl;
-}
-
-static Ihandle *buildRuleHeader(void) {
-    Ihandle *spacer = IupLabel("");
-    char rs[24];
-    Ihandle *row;
-    snprintf(rs, sizeof(rs), "%dx14", OCR_DEL_W);
-    IupSetAttribute(spacer, "RASTERSIZE", rs);
-    row = IupHbox(headerLabel("ocr.col.name", OCR_NAME_W),
-                  headerLabel("ocr.col.keywords", OCR_KW_W),
-                  headerLabel("ocr.col.edge", OCR_EDGE_W),
-                  headerLabel("ocr.col.frames", OCR_FRAMES_W),
-                  headerLabel("ocr.col.loss", OCR_LOSS_W),
-                  spacer, NULL);
-    IupSetAttribute(row, "GAP", OCR_COL_GAP);
-    return row;
-}
-
-// Grey one-line hint explaining the keywords column (bound so the long
-// zh/EN text retranslates; WRAP keeps it inside the folded width).
-static Ihandle *buildKwHint(void) {
-    Ihandle *lbl = IupFlatLabel(tr("ocr.kwHint"));
-    i18nBind(lbl, "TITLE", "ocr.kwHint");
-    IupSetAttribute(lbl, "FGCOLOR", "110 110 110");
-    IupSetAttribute(lbl, "WRAP", "YES");
-    IupSetAttribute(lbl, "EXPAND", "HORIZONTAL");
-    return lbl;
-}
-
 static Ihandle *buildParamsRow(void) {
     Ihandle *intervalLbl;
     g_interval = IupText(NULL);
@@ -686,8 +428,7 @@ static int frameMapCb(Ihandle *frame) {
 }
 
 Ihandle *uiOcrCreate(Icallback actionCbImpl) {
-    Ihandle *windowRow, *addRow, *headerRow, *paramsRow, *logArea;
-    Ihandle *startRow;
+    Ihandle *windowRow, *groupsRoot, *paramsRow, *logArea, *startRow;
 
     g_actionCb = actionCbImpl;
 
@@ -702,14 +443,17 @@ Ihandle *uiOcrCreate(Icallback actionCbImpl) {
 
     windowRow = buildWindowRow();
 
-    g_addBtn = IupButton(tr("ocr.addRegion"), NULL);
-    i18nBind(g_addBtn, "TITLE", "ocr.addRegion");
-    IupSetAttribute(g_addBtn, "ACTIVE", "NO");
-    IupSetCallback(g_addBtn, "ACTION", (Icallback)addRegionCb);
-    addRow = IupHbox(g_addBtn, IupFill(), NULL);
+    // Region frame + group frame tables; the drag-to-add region button
+    // is created inside that module, so bind its overlay path and state
+    // gates from here.
+    groupsRoot = uiOcrGroupsCreate();
+    g_addBtn = uiOcrGroupsRegionButton();
+    if (g_addBtn != NULL) {
+        IupSetCallback(g_addBtn, "ACTION", (Icallback)addRegionCb);
+    }
+    uiOcrGroupsSetRegionGate(pickedWindowGate);
+    uiOcrGroupsSetErrorSink(showErrorText);
 
-    g_ruleBox = IupVbox(NULL);
-    headerRow = buildRuleHeader();
     paramsRow = buildParamsRow();
 
     logArea = uiOcrLogBuild();
@@ -741,14 +485,13 @@ Ihandle *uiOcrCreate(Icallback actionCbImpl) {
     }
     startRow = IupHbox(IupFill(), g_startBtn, IupFill(), NULL);
 
-    g_body = IupVbox(windowRow, addRow, headerRow, buildKwHint(),
-                     g_ruleBox, paramsRow,
+    g_body = IupVbox(windowRow, groupsRoot, paramsRow,
                      logArea, g_errorLabel, startRow, NULL);
     IupSetAttribute(g_body, "VISIBLE", "NO");
     IupSetAttribute(g_body, "FLOATING", "YES");
     IupSetAttribute(g_body, "GAP", "6");
 
-    // Gate-refusal line placed OUTSIDE g_body so it can explain why a
+    // Gate-refusal line placed OUTSIDE g_body so it explains why a
     // click on the enable checkbox did nothing while the body is still
     // folded. Hidden + floating until a refusal actually happens.
     g_gateError = IupFlatLabel("");
@@ -776,12 +519,7 @@ void uiOcrSetMappedForTest(BOOL mapped) { g_uiMapped = mapped; }
 // Drives the same append path the Add-region button uses, without the
 // modal overlay.
 BOOL uiOcrAddRegionForTest(const NormRect *norm) {
-    return addRegionFromNorm(norm);
-}
-
-Ihandle *uiOcrRowBoxForTest(size_t i) {
-    if (i >= g_rowCount) return NULL;
-    return g_rows[i].box;
+    return uiOcrGroupsAppendRegions(norm, 1);
 }
 
 Ihandle *uiOcrEnableToggleForTest(void) { return g_enableToggle; }
@@ -790,6 +528,7 @@ Ihandle *uiOcrAddButtonForTest(void) { return g_addBtn; }
 Ihandle *uiOcrStartButtonForTest(void) { return g_startBtn; }
 Ihandle *uiOcrBodyForTest(void) { return g_body; }
 Ihandle *uiOcrGateErrorForTest(void) { return g_gateError; }
+Ihandle *uiOcrErrorLabelForTest(void) { return g_errorLabel; }
 
 #else // !CLUMSY_OCR — no-op stubs for builds without OCR
 
@@ -822,14 +561,11 @@ Ihandle *uiOcrAddButtonForTest(void) { return NULL; }
 Ihandle *uiOcrStartButtonForTest(void) { return NULL; }
 Ihandle *uiOcrBodyForTest(void) { return NULL; }
 Ihandle *uiOcrGateErrorForTest(void) { return NULL; }
+Ihandle *uiOcrErrorLabelForTest(void) { return NULL; }
 void uiOcrSetMappedForTest(BOOL mapped) { (void)mapped; }
 BOOL uiOcrAddRegionForTest(const NormRect *norm) {
     (void)norm;
     return FALSE;
-}
-Ihandle *uiOcrRowBoxForTest(size_t i) {
-    (void)i;
-    return NULL;
 }
 
 #endif // CLUMSY_OCR

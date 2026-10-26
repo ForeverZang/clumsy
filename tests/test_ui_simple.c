@@ -17,9 +17,11 @@
 #include "traffic.h"
 #include "ui_simple.h"
 #include "ui_ocr.h"
+#include "ui_ocr_groups.h"
 #include "ui_picker.h"
 #include "ocr_app.h"
 #include "iup.h"
+#include "iupcontrols.h"
 
 // Marker callback so pointer identity can be checked on the widget.
 static int g_fakeFired = 0;
@@ -99,6 +101,8 @@ int main(void) {
         Ihandle *btn, *box;
         IupOpen(&targc, &targv);
         IupSetGlobal("UTF8MODE", "YES");
+        // The region/group tables are IupMatrix controls from iupcontrols.
+        assert(IupControlsOpen() == IUP_NOERROR);
         box = uiSimpleCreate((Icallback)fakeActionCb, NULL);
         btn = uiSimpleActionButton();
         assert(btn != NULL);
@@ -168,6 +172,13 @@ int main(void) {
             OcrConfig cfg, got;
             OcrRegionDef *d0, *d1;
             OcrGroup *g0, *g1;
+            // Dynamic matrix text comes from VALUE_CB (no stored cell
+            // attribute); invoke the callback the way paint does.
+            const char *matCell(Ihandle *m, int lin, int col) {
+                typedef char *(*MatValueCb)(Ihandle *, int, int);
+                MatValueCb cb = (MatValueCb)IupGetCallback(m, "VALUE_CB");
+                return cb != NULL ? cb(m, lin, col) : NULL;
+            }
 
             assert(ocr != NULL);
             assert(enToggle != NULL && ocrBody != NULL);
@@ -200,6 +211,28 @@ int main(void) {
             // (FLOATING=YES), like the tab pages, so the dialog fit
             // shrinks with the section.
             assert(strcmp(IupGetAttribute(ocrBody, "FLOATING"), "YES") == 0);
+
+            // Two fixed-height IupMatrix tables start empty and stay a
+            // constant pixel height regardless of how many entries later
+            // land in the model (internal scrolling). Framework finding
+            // (probed on IUP 3.30 Win64): NUMLIN_VISIBLE is clamped to
+            // NUMLIN and reads -1 before map, so an empty table cannot
+            // advertise visible rows through that attribute. The fixed
+            // height is pinned as a height-only RASTERSIZE "0xH"
+            // (17px header + 25px/row -> 4 rows 117px, 3 rows 92px).
+            {
+                int pinH(const char *rs) {
+                    const char *x = strchr(rs, 'x');
+                    return x != NULL ? atoi(x + 1) : -1;
+                }
+                Ihandle *rm0 = uiOcrRegionsMatrixForTest();
+                Ihandle *gm0 = uiOcrGroupsMatrixForTest();
+                assert(rm0 != NULL && gm0 != NULL);
+                assert(IupGetInt(rm0, "NUMLIN") == 0);
+                assert(IupGetInt(gm0, "NUMLIN") == 0);
+                assert(pinH(IupGetAttribute(rm0, "RASTERSIZE")) == 117);
+                assert(pinH(IupGetAttribute(gm0, "RASTERSIZE")) == 92);
+            }
 
             // IupFlatToggle mirrors IupFlatButton: ACTION is reserved as
             // its internal canvas paint routine. The user click must be
@@ -276,9 +309,9 @@ int main(void) {
             assert(got.regionCount == 0);
             assert(got.groupCount == 0);
 
-            // Two parallel region + single-member-group rows round-trip
-            // through the row widgets (zh keywords, norm preservation,
-            // dropdown edge mapping) under the Task 2 interim adapter.
+            // Two regions + two groups round-trip through the fixed
+            // tables; group 0 is a real two-member AND group (R1 "就绪"
+            // AND R2 "仓库"), group 1 stays single-member.
             memset(&cfg, 0, sizeof(cfg));
             strcpy(cfg.exeName, "qa-fixture.exe");
             strcpy(cfg.windowTitle, "QA Fixture 窗口");
@@ -298,9 +331,11 @@ int main(void) {
             g0->edge = OCR_EDGE_DISAPPEAR;
             g0->confirmFrames = 2;
             g0->lossPercent = 95;
-            g0->memberCount = 1;
+            g0->memberCount = 2;
             g0->members[0].regionIndex = 0;
-            strcpy(g0->members[0].keywords, "仓库");
+            strcpy(g0->members[0].keywords, "就绪");
+            g0->members[1].regionIndex = 1;
+            strcpy(g0->members[1].keywords, "仓库");
             g1 = &cfg.groups[1];
             g1->edge = OCR_EDGE_APPEAR;
             g1->confirmFrames = 1;
@@ -309,6 +344,48 @@ int main(void) {
             g1->members[0].regionIndex = 1;
             strcpy(g1->members[0].keywords, "重连,reconnect");
             assert(uiOcrPopulate(&cfg));
+            {
+                Ihandle *rmT = uiOcrRegionsMatrixForTest();
+                Ihandle *gmT = uiOcrGroupsMatrixForTest();
+                assert(IupGetInt(rmT, "NUMLIN") == 2);
+                assert(IupGetInt(gmT, "NUMLIN") == 2);
+            }
+
+            // The group-table condition column summarizes members in
+            // table language: zh "R1.. 且 R2.." (first keyword before a
+            // comma), English after a live language switch (" and ").
+            {
+                char sum[128];
+                const char *cell;
+                Ihandle *rmT = uiOcrRegionsMatrixForTest();
+                Ihandle *gmT = uiOcrGroupsMatrixForTest();
+                // g_lang defaults to EN in a headless test (no i18n
+                // detection); pin ZH explicitly for the zh assertions.
+                i18nSetLang(LANG_ZH);
+                uiOcrGroupsSummary(g0, sum, sizeof(sum));
+                assert(strstr(sum, "R1") != NULL);
+                assert(strstr(sum, "且") != NULL);
+                assert(strstr(sum, "R2") != NULL);
+                // First group row, summary column (col 0 is the row
+                // header); the region-table position cell shows the
+                // two-decimal "x, y w×h" format.
+                cell = matCell(gmT, 1, 1);
+                assert(cell != NULL);
+                assert(strstr(cell, "R1") && strstr(cell, "且")
+                       && strstr(cell, "R2"));
+                cell = matCell(rmT, 1, 2);
+                assert(cell != NULL);
+                assert(strstr(cell, "0.10") && strstr(cell, "0.08"));
+                i18nSetLang(LANG_EN);
+                uiOcrGroupsRetranslate();
+                cell = matCell(gmT, 1, 1);
+                assert(cell != NULL && strstr(cell, " and ") != NULL);
+                uiOcrGroupsSummary(g0, sum, sizeof(sum));
+                assert(strstr(sum, " and ") != NULL);
+                i18nSetLang(LANG_ZH);
+                uiOcrGroupsRetranslate();
+            }
+
             memset(&got, 0, sizeof(got));
             assert(uiOcrGetConfig(&got));
             assert(got.regionCount == 2);
@@ -321,9 +398,12 @@ int main(void) {
             assert(got.groups[0].edge == OCR_EDGE_DISAPPEAR);
             assert(got.groups[0].confirmFrames == 2);
             assert(got.groups[0].lossPercent == 95);
-            assert(got.groups[0].memberCount == 1);
+            assert(got.groups[0].memberCount == 2);
             assert(got.groups[0].members[0].regionIndex == 0);
             assert(strcmp(got.groups[0].members[0].keywords,
+                          "就绪") == 0);
+            assert(got.groups[0].members[1].regionIndex == 1);
+            assert(strcmp(got.groups[0].members[1].keywords,
                           "仓库") == 0);
             assert(got.groups[1].memberCount == 1);
             assert(got.groups[1].members[0].regionIndex == 1);
@@ -335,27 +415,226 @@ int main(void) {
             assert(strcmp(got.windowTitle, "QA Fixture 窗口") == 0);
             assert(strcmp(got.exeName, "qa-fixture.exe") == 0);
 
-            // Invalid rows make collection fail (Start must refuse):
-            // loss out of 0..100, 0 confirm frames, empty keywords.
-            cfg.groups[0].lossPercent = 120;
-            assert(uiOcrPopulate(&cfg));
-            memset(&got, 0, sizeof(got));
-            assert(!uiOcrGetConfig(&got));
-            cfg.groups[0].lossPercent = 95;
+            // The same model comes back through the module-level getter.
+            {
+                OcrRegionDef mr[OCR_MAX_REGIONS];
+                OcrGroup mg[OCR_MAX_GROUPS];
+                size_t mrc = 99, mgc = 99;
+                uiOcrGroupsGetModel(mr, &mrc, mg, &mgc);
+                assert(mrc == 2 && mgc == 2);
+                assert(strcmp(mr[1].name, "reconnect") == 0);
+                assert(mg[0].memberCount == 2);
+                assert(mg[0].members[0].regionIndex == 0);
+                assert(mg[0].members[1].regionIndex == 1);
+            }
 
-            cfg.groups[1].confirmFrames = 0;
-            assert(uiOcrPopulate(&cfg));
-            assert(!uiOcrGetConfig(&got));
-            cfg.groups[1].confirmFrames = 1;
+            // Invalid group drafts are refused on the same red-label
+            // channel and never enter the table: no members, empty
+            // keywords, bad frames/loss, out-of-range region.
+            {
+                Ihandle *errLbl = uiOcrErrorLabelForTest();
+                OcrGroup bad;
+                const char *et;
+                memset(&bad, 0, sizeof(bad));
+                bad.edge = OCR_EDGE_DISAPPEAR;
+                bad.confirmFrames = 2;
+                bad.lossPercent = 95;
+                assert(errLbl != NULL);
+                uiOcrShowError("");
+                assert(!uiOcrGroupsCommitGroupForTest(&bad, -1));
+                et = IupGetAttribute(errLbl, "TITLE");
+                assert(et != NULL && et[0] != '\0');
+                bad.memberCount = 1;
+                bad.members[0].regionIndex = 0;
+                bad.members[0].keywords[0] = '\0';
+                uiOcrShowError("");
+                assert(!uiOcrGroupsCommitGroupForTest(&bad, -1));
+                et = IupGetAttribute(errLbl, "TITLE");
+                assert(et != NULL && et[0] != '\0');
+                strcpy(bad.members[0].keywords, "就绪");
+                bad.confirmFrames = 0;
+                uiOcrShowError("");
+                assert(!uiOcrGroupsCommitGroupForTest(&bad, -1));
+                et = IupGetAttribute(errLbl, "TITLE");
+                assert(et != NULL && et[0] != '\0');
+                bad.confirmFrames = 2;
+                bad.lossPercent = 101;
+                uiOcrShowError("");
+                assert(!uiOcrGroupsCommitGroupForTest(&bad, -1));
+                et = IupGetAttribute(errLbl, "TITLE");
+                assert(et != NULL && et[0] != '\0');
+                bad.lossPercent = 95;
+                bad.members[0].regionIndex = 7;
+                uiOcrShowError("");
+                assert(!uiOcrGroupsCommitGroupForTest(&bad, -1));
+                et = IupGetAttribute(errLbl, "TITLE");
+                assert(et != NULL && et[0] != '\0');
+                // None of the refusals appended a row.
+                assert(uiOcrGroupsGroupCountForTest() == 2);
+                // A valid draft becomes the third group (same OK path
+                // the modal dialog's OK button uses).
+                bad.members[0].regionIndex = 0;
+                assert(uiOcrGroupsCommitGroupForTest(&bad, -1));
+                assert(uiOcrGroupsGroupCountForTest() == 3);
+            }
+            assert(uiOcrPopulate(&cfg)); // back to the 2/2 model
 
-            cfg.groups[0].members[0].keywords[0] = '\0';
-            assert(uiOcrPopulate(&cfg));
-            assert(!uiOcrGetConfig(&got));
+            // Region deletion remaps member indices by IDENTITY: remove
+            // the middle region and the {0,2} group becomes {0,1} with
+            // each keyword still attached to its original region
+            // (Review Focus #4). Deleting every referenced region leaves
+            // an empty red-state group, which strict validation rejects
+            // naming the group.
+            uiOcrGroupsSetConfirmSuppressedForTest(TRUE);
+            {
+                OcrRegionDef rs[3];
+                OcrGroup gg;
+                OcrRegionDef mr[OCR_MAX_REGIONS];
+                OcrGroup mg[OCR_MAX_GROUPS];
+                size_t mrc, mgc;
+                char verr[MSG_BUFSIZE];
+                memset(rs, 0, sizeof(rs));
+                memset(&gg, 0, sizeof(gg));
+                strcpy(rs[0].name, "r0");
+                strcpy(rs[1].name, "r1");
+                strcpy(rs[2].name, "r2");
+                rs[0].norm = (NormRect){ 0.0f, 0.0f, 0.2f, 0.2f };
+                rs[1].norm = (NormRect){ 0.2f, 0.2f, 0.2f, 0.2f };
+                rs[2].norm = (NormRect){ 0.4f, 0.4f, 0.2f, 0.2f };
+                gg.edge = OCR_EDGE_DISAPPEAR;
+                gg.confirmFrames = 2;
+                gg.lossPercent = 95;
+                gg.memberCount = 2;
+                gg.members[0].regionIndex = 0;
+                strcpy(gg.members[0].keywords, "kw0");
+                gg.members[1].regionIndex = 2;
+                strcpy(gg.members[1].keywords, "kw2");
 
-            // Restore the field the negative case damaged: the Task 9
-            // positive cases below collect a config that must validate.
-            strcpy(cfg.groups[0].members[0].keywords, "仓库");
+                assert(uiOcrGroupsSetModel(rs, 3, &gg, 1));
+                uiOcrGroupsDeleteRegionForTest(1);
+                uiOcrGroupsGetModel(mr, &mrc, mg, &mgc);
+                assert(mrc == 2 && mgc == 1);
+                assert(strcmp(mr[0].name, "r0") == 0);
+                assert(strcmp(mr[1].name, "r2") == 0);
+                assert(mg[0].memberCount == 2);
+                assert(mg[0].members[0].regionIndex == 0);
+                assert(strcmp(mg[0].members[0].keywords, "kw0") == 0);
+                assert(mg[0].members[1].regionIndex == 1);
+                assert(strcmp(mg[0].members[1].keywords, "kw2") == 0);
+
+                // Fresh model, then remove both referenced regions:
+                // the group survives as a 0-member red empty group.
+                assert(uiOcrGroupsSetModel(rs, 3, &gg, 1));
+                uiOcrGroupsDeleteRegionForTest(2);
+                uiOcrGroupsDeleteRegionForTest(0);
+                uiOcrGroupsGetModel(mr, &mrc, mg, &mgc);
+                assert(mrc == 1 && strcmp(mr[0].name, "r1") == 0);
+                assert(mgc == 1 && mg[0].memberCount == 0);
+                // The emptied group renders the red empty-row text.
+                assert(strcmp(matCell(uiOcrGroupsMatrixForTest(), 1, 1),
+                              tr("ocr.group.empty")) == 0);
+                memset(&got, 0, sizeof(got));
+                assert(!uiOcrGetConfig(&got));
+                assert(!ocrConfigValidate(&got, verr));
+                assert(strstr(verr, "group 1") != NULL);
+            }
+            uiOcrGroupsSetConfirmSuppressedForTest(FALSE);
+
+            // Rename seam lands in both the model and collected config.
             assert(uiOcrPopulate(&cfg));
+            uiOcrGroupsRenameRegionForTest(0, "renamed");
+            {
+                OcrRegionDef mr[OCR_MAX_REGIONS];
+                OcrGroup mg[OCR_MAX_GROUPS];
+                size_t mrc, mgc;
+                uiOcrGroupsGetModel(mr, &mrc, mg, &mgc);
+                assert(strcmp(mr[0].name, "renamed") == 0);
+                memset(&got, 0, sizeof(got));
+                assert(uiOcrGetConfig(&got));
+                assert(strcmp(got.regions[0].name, "renamed") == 0);
+            }
+
+            // Appended regions take default "Region N" names (sequence
+            // continuing the current count) and preserve their rects.
+            assert(uiOcrGroupsSetModel(NULL, 0, NULL, 0));
+            {
+                NormRect pair[2] = {
+                    { 0.1f, 0.2f, 0.3f, 0.4f },
+                    { 0.5f, 0.6f, 0.2f, 0.1f }
+                };
+                OcrRegionDef mr[OCR_MAX_REGIONS];
+                OcrGroup mg[OCR_MAX_GROUPS];
+                size_t mrc, mgc;
+                assert(uiOcrGroupsAppendRegions(pair, 2));
+                uiOcrGroupsGetModel(mr, &mrc, mg, &mgc);
+                assert(mrc == 2 && mgc == 0);
+                assert(strcmp(mr[0].name, "Region 1") == 0);
+                assert(strcmp(mr[1].name, "Region 2") == 0);
+                assert(fabs(mr[0].norm.x - 0.1) < 1e-6);
+                assert(fabs(mr[1].norm.y - 0.6) < 1e-6);
+                assert(fabs(mr[1].norm.h - 0.1) < 1e-6);
+            }
+
+            // 16/16 caps: both add controls disable with an explanatory
+            // tip, and both overflow entry points return FALSE.
+            {
+                OcrRegionDef sixteen[OCR_MAX_REGIONS];
+                OcrGroup g16;
+                NormRect one = { 0.1f, 0.1f, 0.2f, 0.2f };
+                Ihandle *newBtn = uiOcrGroupsNewGroupButtonForTest();
+                size_t k;
+                memset(sixteen, 0, sizeof(sixteen));
+                memset(&g16, 0, sizeof(g16));
+                for (k = 0; k < OCR_MAX_REGIONS; k++) {
+                    snprintf(sixteen[k].name,
+                             sizeof(sixteen[k].name), "r%u",
+                             (unsigned)k);
+                    sixteen[k].norm = one;
+                }
+                assert(uiOcrGroupsSetModel(sixteen, 16, NULL, 0));
+                assert(!uiOcrGroupsAppendRegions(&one, 1));
+                assert(uiOcrGroupsRegionCountForTest() == 16);
+                assert(strcmp(IupGetAttribute(addBtn, "ACTIVE"),
+                              "NO") == 0);
+                assert(strcmp(IupGetAttribute(addBtn, "TIP"),
+                              tr("ocr.limitRegions")) == 0);
+                g16.edge = OCR_EDGE_DISAPPEAR;
+                g16.confirmFrames = 1;
+                g16.lossPercent = 95;
+                g16.memberCount = 1;
+                g16.members[0].regionIndex = 0;
+                strcpy(g16.members[0].keywords, "x");
+                for (k = 0; k < OCR_MAX_GROUPS; k++) {
+                    assert(uiOcrGroupsCommitGroupForTest(&g16, -1));
+                }
+                assert(uiOcrGroupsGroupCountForTest() == 16);
+                assert(!uiOcrGroupsCommitGroupForTest(&g16, -1));
+                assert(strcmp(IupGetAttribute(newBtn, "ACTIVE"),
+                              "NO") == 0);
+                assert(strcmp(IupGetAttribute(newBtn, "TIP"),
+                              tr("ocr.limitGroups")) == 0);
+            }
+
+            // Running freezes both tables and both add buttons; stop
+            // restores each to its prior state.
+            {
+                Ihandle *rmT = uiOcrRegionsMatrixForTest();
+                Ihandle *gmT = uiOcrGroupsMatrixForTest();
+                Ihandle *newBtn = uiOcrGroupsNewGroupButtonForTest();
+                int addWas = IupGetInt(addBtn, "ACTIVE");
+                int newWas = IupGetInt(newBtn, "ACTIVE");
+                assert(uiOcrPopulate(&cfg));
+                uiOcrSetRunning(TRUE);
+                assert(IupGetInt(rmT, "ACTIVE") == 0);
+                assert(IupGetInt(gmT, "ACTIVE") == 0);
+                assert(IupGetInt(addBtn, "ACTIVE") == 0);
+                assert(IupGetInt(newBtn, "ACTIVE") == 0);
+                uiOcrSetRunning(FALSE);
+                assert(IupGetInt(rmT, "ACTIVE") != 0);
+                assert(IupGetInt(gmT, "ACTIVE") != 0);
+                assert(IupGetInt(addBtn, "ACTIVE") == addWas);
+                assert(IupGetInt(newBtn, "ACTIVE") == newWas);
+            }
 
             // Log mirror: the FIRST append grows the buffer from NULL;
             // the fresh realloc block must be NUL-terminated before
@@ -434,24 +713,18 @@ int main(void) {
                 assert(strcmp(uiOcrSavedWindowTitle(),
                               "QA Fixture 窗口") == 0);
 
-                // A picked region appends a placeholder region + group
-                // the user then fills in: default DISAPPEAR / 2 frames /
-                // 95%, member pointing at the parallel region. Strict
-                // collection now refuses empty keywords itself; on
-                // failure *out is still fully written, so the defaults
-                // are asserted on the rejected config.
+                // A picked region appends a REGION ONLY now (groups are
+                // built separately through the New-group dialog): the
+                // current model has 2 regions, so the default name is
+                // "Region 3", groups stay at 2 and the existing groups
+                // still validate.
                 nr.x = 0.10; nr.y = 0.90; nr.w = 0.50; nr.h = 0.08;
                 assert(uiOcrAddRegionForTest(&nr));
                 memset(&got, 0, sizeof(got));
-                assert(!uiOcrGetConfig(&got));
+                assert(uiOcrGetConfig(&got));
                 assert(got.regionCount == 3);
-                assert(got.groupCount == 3);
-                assert(strcmp(got.regions[2].name, "Region 1") == 0);
-                assert(got.groups[2].members[0].regionIndex == 2);
-                assert(got.groups[2].members[0].keywords[0] == '\0');
-                assert(got.groups[2].edge == OCR_EDGE_DISAPPEAR);
-                assert(got.groups[2].confirmFrames == 2);
-                assert(got.groups[2].lossPercent == 95);
+                assert(got.groupCount == 2);
+                assert(strcmp(got.regions[2].name, "Region 3") == 0);
                 assert(fabs(got.regions[2].norm.x - 0.10) < 1e-6);
                 assert(fabs(got.regions[2].norm.y - 0.90) < 1e-6);
                 assert(fabs(got.regions[2].norm.w - 0.50) < 1e-6);
@@ -582,22 +855,50 @@ int main(void) {
                 mappedValue = IupGetAttribute(enToggle, "VALUE");
                 assert(mappedValue != NULL
                        && strcmp(mappedValue, "ON") == 0);
-                // Rows present before show map wholesale with dialog.
-                assert(isMapped(IupGetChild(uiOcrRowBoxForTest(0), 0)));
+                // Both tables map wholesale with the dialog (the old
+                // row-container blank-paint bug, now owned by IupMatrix
+                // internals, is still worth pinning at the table level).
+                assert(isMapped(uiOcrRegionsMatrixForTest()));
+                assert(isMapped(uiOcrGroupsMatrixForTest()));
 
-                // "Add region" after show must map the new row subtree
-                // immediately; an unmapped child takes layout space but
-                // paints blank (2 populated rows -> new row is index 2).
-                // The hbox row itself is a composition node (sentinel
-                // WID); its first field (the name text) proves the
-                // subtree was mapped.
+                // "Add region" after show must grow the live table
+                // immediately (2 populated regions -> row 3) instead of
+                // only updating the model behind a stale widget.
                 {
                     NormRect postRect = { 0.05, 0.05, 0.20, 0.20 };
-                    Ihandle *newRow;
                     assert(uiOcrAddRegionForTest(&postRect));
-                    newRow = uiOcrRowBoxForTest(2);
-                    assert(newRow != NULL);
-                    assert(isMapped(IupGetChild(newRow, 0)));
+                    assert(IupGetInt(uiOcrRegionsMatrixForTest(),
+                                     "NUMLIN") == 3);
+                    assert(uiOcrGroupsRegionCountForTest() == 3);
+                    assert(strcmp(matCell(uiOcrRegionsMatrixForTest(),
+                                          3, 1), "Region 3") == 0);
+                    assert(isMapped(uiOcrRegionsMatrixForTest()));
+                }
+                // Fixed-height contract on the live widgets. Framework
+                // quirk (probed on IUP 3.30 Win64): while every row
+                // fits without a scrollbar, NUMLIN_VISIBLE reports
+                // NUMLIN-1 (the bottom row is counted as a partial
+                // row); once content overflows it reports the true
+                // fixed window. A 5th region is therefore what opens
+                // the 4-row scroll window, and both tables keep their
+                // pinned pixel heights the whole time.
+                {
+                    NormRect fourthRect = { 0.06, 0.06, 0.21, 0.21 };
+                    NormRect fifthRect = { 0.07, 0.07, 0.22, 0.22 };
+                    const char *rh;
+                    const char *gh;
+                    assert(uiOcrAddRegionForTest(&fourthRect));
+                    assert(uiOcrAddRegionForTest(&fifthRect));
+                    assert(IupGetInt(uiOcrRegionsMatrixForTest(),
+                                     "NUMLIN") == 5);
+                    assert(IupGetInt(uiOcrRegionsMatrixForTest(),
+                                     "NUMLIN_VISIBLE") == 4);
+                    rh = IupGetAttribute(uiOcrRegionsMatrixForTest(),
+                                         "RASTERSIZE");
+                    gh = IupGetAttribute(uiOcrGroupsMatrixForTest(),
+                                         "RASTERSIZE");
+                    assert(atoi(strchr(rh, 'x') + 1) == 117);
+                    assert(atoi(strchr(gh, 'x') + 1) == 92);
                 }
                 IupDestroy(dlg); // owns box
             }

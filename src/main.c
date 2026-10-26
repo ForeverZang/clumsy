@@ -13,6 +13,7 @@
 #include "ui_simple.h"
 #include "ui_advanced.h"
 #if defined(CLUMSY_OCR)
+#include "iupcontrols.h"
 #include "ui_ocr.h"
 #include "ocr_glue.h"
 #endif
@@ -398,6 +399,10 @@ void init(int argc, char* argv[]) {
     IupOpen(&argc, &argv);
     // source files are UTF-8; switch IUP to UTF-8 before any dialog exists
     IupSetGlobal("UTF8MODE", "YES");
+#if defined(CLUMSY_OCR)
+    // IupMatrix lives in iupcontrols; needed by the OCR region/group tables
+    IupControlsOpen();
+#endif
     i18nSetLang(i18nDetect());
 
     // parse arguments before building module rows (parameterized layout)
