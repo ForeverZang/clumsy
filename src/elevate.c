@@ -104,10 +104,17 @@ BOOL IsElevated( ) {
 static void elevateMessageBox(HWND hWnd, const char *textKey) {
     wchar_t text[512];
     wchar_t title[128];
-    MultiByteToWideChar(CP_UTF8, 0, tr(textKey), -1, text, ARRAYSIZE(text));
-    MultiByteToWideChar(CP_UTF8, 0, tr("app.title"), -1, title,
-                        ARRAYSIZE(title));
-    MessageBoxW(hWnd, text, title, MB_OK | MB_ICONWARNING);
+    // On conversion failure/overflow skip the uninitialized buffers and
+    // show fixed English fallbacks instead of stack garbage.
+    const wchar_t *body = text;
+    const wchar_t *name = title;
+    if (MultiByteToWideChar(CP_UTF8, 0, tr(textKey), -1, text,
+                            ARRAYSIZE(text)) <= 0)
+        body = L"Administrator rights are required to run clumsy.";
+    if (MultiByteToWideChar(CP_UTF8, 0, tr("app.title"), -1, title,
+                            ARRAYSIZE(title)) <= 0)
+        name = L"clumsy";
+    MessageBoxW(hWnd, body, name, MB_OK | MB_ICONWARNING);
 }
 
 // try elevate and error out when can't happen
