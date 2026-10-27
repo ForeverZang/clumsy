@@ -654,22 +654,29 @@ static Ihandle *createToolbar(void) {
     IupSetAttribute(dlg, "TITLEBAR", "NO");
     IupSetAttribute(dlg, "MENUBOX", "NO");
     IupSetAttribute(dlg, "RESIZE", "NO");
+    // Framework finding (IUP 3.30 Win64, probed on Win11): BORDER/TITLEBAR/
+    // MENUBOX/RESIZE=NO alone leave WS_CAPTION on the native window while
+    // MINBOX/MAXBOX keep their YES defaults — the popup then carries a ~29px
+    // white caption strip and only a sliver of dark client is visible (the
+    // "empty white pill" toolbar bug). Turning the caption buttons off as
+    // well strips WS_CAPTION and yields a zero-chrome WS_POPUP.
+    IupSetAttribute(dlg, "MINBOX", "NO");
+    IupSetAttribute(dlg, "MAXBOX", "NO");
     IupSetAttribute(dlg, "TOPMOST", "YES");
     IupSetAttribute(dlg, "BGCOLOR", PICKER_BARBG);
     IupSetCallback(dlg, "K_ANY", (Icallback)barKeyCb);
-    // Pin the dialog to its measured natural size rather than a fixed
-    // 600x46: at 125%/150% display scaling the Chinese button row measures
-    // wider and taller, and the forced box clipped the right-side buttons
-    // ("显示不全"). The constants are only the fallback when IUP cannot
-    // report a natural size.
+    // Pin the dialog (outer size; it is zero-chrome now) to its measured
+    // natural size rather than a fixed 600x46, so the Chinese button row
+    // fits at any display scaling. The constants are only the fallback
+    // when IUP cannot report a natural size.
     g_ov.barW = PICKER_BAR_W;
     g_ov.barH = PICKER_BAR_H;
     IupRefresh(dlg);
-    natural = IupGetAttribute(row, "NATURALSIZE");
+    natural = IupGetAttribute(dlg, "NATURALSIZE");
     if (natural != NULL
         && sscanf(natural, "%dx%d", &g_ov.barW, &g_ov.barH) == 2
         && g_ov.barW > 0 && g_ov.barH > 0) {
-        // measured
+        // measured outer size (outer == client with caption stripped)
     } else {
         g_ov.barW = PICKER_BAR_W;
         g_ov.barH = PICKER_BAR_H;
@@ -819,6 +826,11 @@ BOOL uiPickerBarPlacementForTest(int barW, int barH, POINT *out) {
     return placementBar(barW, barH, out);
 }
 
+HWND uiPickerBarHwndForTest(void) {
+    if (g_ov.bar == NULL) return NULL;
+    return (HWND)(intptr_t)IupGetAttribute(g_ov.bar, "HWND");
+}
+
 void uiPickerSetLockedPidForTest(DWORD pid) {
     if (g_ov.m.locked < 0) return;
     g_ov.wins[g_ov.m.locked].pid = pid;
@@ -864,6 +876,7 @@ BOOL uiPickerBarPlacementForTest(int barW, int barH, POINT *out) {
     (void)barW; (void)barH; (void)out;
     return FALSE;
 }
+HWND uiPickerBarHwndForTest(void) { return NULL; }
 void uiPickerSetLockedPidForTest(DWORD pid) { (void)pid; }
 BOOL uiPickerTimerTickForTest(void) { return FALSE; }
 

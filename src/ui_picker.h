@@ -74,5 +74,9 @@ BOOL uiPickerTimerTickForTest(void);
 // measured size (centered, 12px above the work-area bottom, clamped on
 // screen). FALSE when no overlay is active.
 BOOL uiPickerBarPlacementForTest(int barW, int barH, POINT *out);
+// Native HWND of the bottom toolbar while its modal popup is running;
+// NULL outside a pick. Lets the suite assert zero-chrome framing and the
+// real on-screen rect against the overlay monitor work area.
+HWND uiPickerBarHwndForTest(void);
 
 #endif // CLUMSY_UI_PICKER_H

@@ -42,9 +42,12 @@ static int recyclePickTimerCb(Ihandle *t) {
     // could run the bar under the taskbar.
     {
         HWND ov = uiPickerOverlayHwndForTest();
+        HWND bar;
         MONITORINFO mi;
         POINT bp;
+        RECT br;
         long ww, wh;
+        LONG_PTR style;
         assert(ov != NULL);
         mi.cbSize = sizeof(mi);
         assert(GetMonitorInfoW(MonitorFromWindow(ov,
@@ -62,6 +65,29 @@ static int recyclePickTimerCb(Ihandle *t) {
         if (wh >= 70 + 12) {
             assert(bp.y == mi.rcWork.bottom - 70 - 12);
         }
+        // Framework finding (probed on IUP 3.30 Win64, Win11): a dialog
+        // with BORDER/TITLEBAR/MENUBOX/RESIZE=NO still keeps WS_CAPTION
+        // while MINBOX/MAXBOX stay at their YES defaults, leaving a ~29px
+        // white caption strip and a 6px-tall client — the "toolbar shows
+        // as an empty white pill" bug. MINBOX/MAXBOX=NO strip it, giving
+        // a zero-chrome popup whose outer rect equals its client rect.
+        bar = uiPickerBarHwndForTest();
+        assert(bar != NULL);
+        style = GetWindowLongPtrW(bar, GWL_STYLE);
+        assert((style & WS_CAPTION) == 0);
+        assert(GetWindowRect(bar, &br));
+        {
+            RECT bc;
+            assert(GetClientRect(bar, &bc));
+            assert((br.right - br.left) == bc.right);
+            assert((br.bottom - br.top) == bc.bottom);
+        }
+        // The real popup (measured natural size, not the 720x70 seam
+        // probe above) must sit fully inside the overlay work area.
+        assert(br.left >= mi.rcWork.left);
+        assert(br.top >= mi.rcWork.top);
+        assert(br.right <= mi.rcWork.right);
+        assert(br.bottom <= mi.rcWork.bottom);
     }
     assert(uiPickerOverlayHwndForTest() != NULL);
     // Same HWND value, different current owner: the pinned pid no longer
