@@ -35,6 +35,34 @@ static HWND g_recycleHwnd;
 static int g_recyclePhase;
 static int recyclePickTimerCb(Ihandle *t) {
     IupSetAttribute(t, "RUN", "NO");
+    // While the overlay is up, the bottom toolbar placement seam must
+    // keep a DPI-grown bar (720x70 at 150%) fully inside the overlay
+    // monitor's work area: horizontally centered, 12px above its bottom.
+    // The old hard-coded 600x46 placement both clipped the buttons and
+    // could run the bar under the taskbar.
+    {
+        HWND ov = uiPickerOverlayHwndForTest();
+        MONITORINFO mi;
+        POINT bp;
+        long ww, wh;
+        assert(ov != NULL);
+        mi.cbSize = sizeof(mi);
+        assert(GetMonitorInfoW(MonitorFromWindow(ov,
+                            MONITOR_DEFAULTTONEAREST), &mi));
+        assert(uiPickerBarPlacementForTest(720, 70, &bp));
+        assert(bp.x >= mi.rcWork.left);
+        assert(bp.y >= mi.rcWork.top);
+        assert(bp.x + 720 <= mi.rcWork.right);
+        assert(bp.y + 70 <= mi.rcWork.bottom);
+        ww = mi.rcWork.right - mi.rcWork.left;
+        wh = mi.rcWork.bottom - mi.rcWork.top;
+        if (ww >= 720) {
+            assert(bp.x == mi.rcWork.left + (ww - 720) / 2);
+        }
+        if (wh >= 70 + 12) {
+            assert(bp.y == mi.rcWork.bottom - 70 - 12);
+        }
+    }
     assert(uiPickerOverlayHwndForTest() != NULL);
     // Same HWND value, different current owner: the pinned pid no longer
     // matches, so every gate must fail closed.
@@ -251,6 +279,25 @@ int main(void) {
                 assert(IupGetInt(gm0, "NUMLIN") == 0);
                 assert(pinH(IupGetAttribute(rm0, "RASTERSIZE")) == 117);
                 assert(pinH(IupGetAttribute(gm0, "RASTERSIZE")) == 92);
+            }
+
+            // The region and group tables sit side by side (hbox): the
+            // enabled OCR block must grow horizontally, not stack into a
+            // very tall window. Both frames stretch to share the width.
+            {
+                Ihandle *root = uiOcrGroupsRootForTest();
+                Ihandle *rf, *gf;
+                assert(root != NULL);
+                assert(strcmp(IupGetClassName(root), "hbox") == 0);
+                assert(IupGetChildCount(root) == 2);
+                rf = IupGetChild(root, 0);
+                gf = IupGetChild(root, 1);
+                assert(strcmp(IupGetClassName(rf), "frame") == 0);
+                assert(strcmp(IupGetClassName(gf), "frame") == 0);
+                assert(strcmp(IupGetAttribute(rf, "EXPAND"),
+                              "HORIZONTAL") == 0);
+                assert(strcmp(IupGetAttribute(gf, "EXPAND"),
+                              "HORIZONTAL") == 0);
             }
 
             // IupFlatToggle mirrors IupFlatButton: ACTION is reserved as

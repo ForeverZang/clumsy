@@ -58,6 +58,8 @@ static size_t       g_groupCount = 0;
 static NormRect     g_rectMirror[OCR_MAX_REGIONS];
 
 static Ihandle *g_regionMatrix, *g_groupMatrix;
+// hbox root holding the two frames side by side (test seam + layout owner)
+static Ihandle *g_root;
 static Ihandle *g_regionBtn, *g_newGroupBtn;
 
 static BOOL g_running = FALSE;
@@ -544,10 +546,15 @@ Ihandle *uiOcrGroupsCreate(void) {
 
     regionFrame = IupFrame(IupVbox(g_regionMatrix, regionBtnRow, NULL));
     i18nBind(regionFrame, "TITLE", "ocr.region.title");
+    IupSetAttribute(regionFrame, "EXPAND", "HORIZONTAL");
     groupFrame = IupFrame(IupVbox(g_groupMatrix, groupBtnRow, NULL));
     i18nBind(groupFrame, "TITLE", "ocr.group.title");
+    IupSetAttribute(groupFrame, "EXPAND", "HORIZONTAL");
 
-    root = IupVbox(regionFrame, groupFrame, NULL);
+    // Side by side: enabling the OCR block grows the window width instead
+    // of stacking two table frames into a very tall dialog (user request).
+    root = IupHbox(regionFrame, groupFrame, NULL);
+    g_root = root;
     IupSetAttribute(root, "GAP", "6");
     refreshMatrices();
     uiOcrGroupsRefresh();
@@ -652,6 +659,7 @@ Ihandle *uiOcrGroupsRegionButton(void) {
 
 Ihandle *uiOcrRegionsMatrixForTest(void) { return g_regionMatrix; }
 Ihandle *uiOcrGroupsMatrixForTest(void) { return g_groupMatrix; }
+Ihandle *uiOcrGroupsRootForTest(void) { return g_root; }
 Ihandle *uiOcrGroupsNewGroupButtonForTest(void) { return g_newGroupBtn; }
 size_t  uiOcrGroupsRegionCountForTest(void) { return g_regionCount; }
 size_t  uiOcrGroupsGroupCountForTest(void) { return g_groupCount; }
@@ -714,6 +722,7 @@ void uiOcrGroupsSetErrorSink(UiOcrGroupsErrorFn fn) { (void)fn; }
 Ihandle *uiOcrGroupsRegionButton(void) { return NULL; }
 Ihandle *uiOcrRegionsMatrixForTest(void) { return NULL; }
 Ihandle *uiOcrGroupsMatrixForTest(void) { return NULL; }
+Ihandle *uiOcrGroupsRootForTest(void) { return NULL; }
 Ihandle *uiOcrGroupsNewGroupButtonForTest(void) { return NULL; }
 size_t  uiOcrGroupsRegionCountForTest(void) { return 0; }
 size_t  uiOcrGroupsGroupCountForTest(void) { return 0; }

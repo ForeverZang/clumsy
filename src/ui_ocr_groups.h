@@ -79,6 +79,9 @@ BOOL uiOcrGroupsCommitDraft(const OcrGroup *draft, long editRow,
 
 Ihandle *uiOcrRegionsMatrixForTest(void);
 Ihandle *uiOcrGroupsMatrixForTest(void);
+// Container holding the region frame and group frame (hbox: the two
+// tables are laid out side by side).
+Ihandle *uiOcrGroupsRootForTest(void);
 Ihandle *uiOcrGroupsNewGroupButtonForTest(void);
 size_t  uiOcrGroupsRegionCountForTest(void);
 size_t  uiOcrGroupsGroupCountForTest(void);
