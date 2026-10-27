@@ -171,6 +171,14 @@ void showStatus(const char* line);
 
 short calcChance(short chance);
 
+// Keep a w x h rectangle at its desired top-left but pull it back inside
+// the monitor work area: overflow on right/bottom pulls the leading edge
+// in, overflow on left/top clamps to the work origin, and a rectangle
+// larger than the work area on an axis aligns at the leading edge. Used
+// by dialog live-refit (must not recenter) and picker toolbar placement.
+void clampIntoWorkRect(int desiredX, int desiredY, int w, int h,
+                       const RECT *work, POINT *out);
+
 // wraped timeBegin/EndPeriod to keep calling safe and end when exit
 #define TIMER_RESOLUTION 4
 void startTimePeriod();

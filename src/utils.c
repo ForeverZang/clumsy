@@ -8,6 +8,38 @@ short calcChance(short chance) {
     return (chance == 10000) || ((rand() % 10000) < chance);
 }
 
+void clampIntoWorkRect(int desiredX, int desiredY, int w, int h,
+                       const RECT *work, POINT *out) {
+    int x = desiredX;
+    int y = desiredY;
+    int workW = work->right - work->left;
+    int workH = work->bottom - work->top;
+
+    // Larger than the work area on an axis: align at the leading edge.
+    if (w >= workW) {
+        x = work->left;
+    } else {
+        if (x < work->left) {
+            x = work->left;                       // off the left edge
+        }
+        if (x + w > work->right) {
+            x = work->right - w;                  // off the right edge
+        }
+    }
+    if (h >= workH) {
+        y = work->top;
+    } else {
+        if (y < work->top) {
+            y = work->top;                        // off the top edge
+        }
+        if (y + h > work->bottom) {
+            y = work->bottom - h;                 // under the taskbar
+        }
+    }
+    out->x = x;
+    out->y = y;
+}
+
 static short resolutionSet = 0;
 
 void startTimePeriod() {

@@ -308,7 +308,9 @@ static void fitPreMap(void) {
 
 // Post-map fit: in IUP 3.30 storing a new dialog RASTERSIZE after map is a
 // no-op, but a native SetWindowPos flows back through WM_SIZE and IUP
-// re-lays the children. Re-centers at the same time.
+// re-lays the children. The current top-left is kept (a fold/refit must
+// not recenter the dialog); the new frame is only pulled back inside the
+// monitor work area when it would overflow an edge or the taskbar.
 static void fitDialogLive(void) {
     int contentW, contentH;
     int chromeW = CHROME_W_INIT, chromeH = CHROME_H_INIT;
@@ -329,16 +331,15 @@ static void fitDialogLive(void) {
     chromeH = (wr.bottom - wr.top) - cr.bottom;
     outerW = contentW + chromeW;
     outerH = contentH + chromeH;
+    x = wr.left;
+    y = wr.top;
     mi.cbSize = sizeof(mi);
     if (GetMonitorInfoW(MonitorFromWindow(dialogHwnd,
                                           MONITOR_DEFAULTTONEAREST), &mi)) {
-        x = mi.rcWork.left
-            + (mi.rcWork.right - mi.rcWork.left - outerW) / 2;
-        y = mi.rcWork.top
-            + (mi.rcWork.bottom - mi.rcWork.top - outerH) / 2;
-    } else {
-        x = wr.left;
-        y = wr.top;
+        POINT clamped;
+        clampIntoWorkRect(x, y, outerW, outerH, &mi.rcWork, &clamped);
+        x = clamped.x;
+        y = clamped.y;
     }
     SetWindowPos(dialogHwnd, NULL, x, y, outerW, outerH,
                  SWP_NOZORDER | SWP_NOACTIVATE);
