@@ -70,5 +70,9 @@ void uiPickerSetLockedPidForTest(DWORD pid);
 // Deliver one WM_TIMER (the 300 ms death backstop) to the overlay and
 // report whether it finished the pick; FALSE when the pick survives.
 BOOL uiPickerTimerTickForTest(void);
+// Compute the bottom toolbar's top-left for the active overlay from its
+// measured size (centered, 12px above the work-area bottom, clamped on
+// screen). FALSE when no overlay is active.
+BOOL uiPickerBarPlacementForTest(int barW, int barH, POINT *out);
 
 #endif // CLUMSY_UI_PICKER_H

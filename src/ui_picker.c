@@ -91,9 +91,11 @@ typedef struct {
     unsigned int *bits;
     int          bw, bh;
     POINT        origin; // monitor work-area origin (screen coords)
+    RECT         work;   // monitor work area (toolbar clamp target)
     HFONT        font;
 
     Ihandle     *bar;
+    int          barW, barH; // measured toolbar outer size
     Ihandle     *undoBtn, *repickBtn, *doneBtn;
 
     POINT        anchor, cur;
@@ -569,6 +571,7 @@ static BOOL createOverlay(void) {
     memset(&mi, 0, sizeof(mi));
     mi.cbSize = sizeof(mi);
     if (!GetMonitorInfoW(mon, &mi)) return FALSE;
+    g_ov.work = mi.rcWork;
     g_ov.origin.x = mi.rcWork.left;
     g_ov.origin.y = mi.rcWork.top;
     g_ov.bw = w = mi.rcWork.right - mi.rcWork.left;
@@ -634,6 +637,7 @@ static Ihandle *darkButton(const char *title, Icallback cb) {
 static Ihandle *createToolbar(void) {
     Ihandle *row, *dlg;
     char raster[32];
+    const char *natural;
     g_ov.undoBtn = darkButton(tr("ocr.picker.undo"), (Icallback)undoCb);
     g_ov.repickBtn = darkButton(tr("ocr.picker.repick"),
                                 (Icallback)repickCb);
@@ -653,10 +657,41 @@ static Ihandle *createToolbar(void) {
     IupSetAttribute(dlg, "TOPMOST", "YES");
     IupSetAttribute(dlg, "BGCOLOR", PICKER_BARBG);
     IupSetCallback(dlg, "K_ANY", (Icallback)barKeyCb);
-    snprintf(raster, sizeof(raster), "%dx%d", PICKER_BAR_W, PICKER_BAR_H);
+    // Pin the dialog to its measured natural size rather than a fixed
+    // 600x46: at 125%/150% display scaling the Chinese button row measures
+    // wider and taller, and the forced box clipped the right-side buttons
+    // ("显示不全"). The constants are only the fallback when IUP cannot
+    // report a natural size.
+    g_ov.barW = PICKER_BAR_W;
+    g_ov.barH = PICKER_BAR_H;
+    IupRefresh(dlg);
+    natural = IupGetAttribute(row, "NATURALSIZE");
+    if (natural != NULL
+        && sscanf(natural, "%dx%d", &g_ov.barW, &g_ov.barH) == 2
+        && g_ov.barW > 0 && g_ov.barH > 0) {
+        // measured
+    } else {
+        g_ov.barW = PICKER_BAR_W;
+        g_ov.barH = PICKER_BAR_H;
+    }
+    snprintf(raster, sizeof(raster), "%dx%d", g_ov.barW, g_ov.barH);
     IupSetAttribute(dlg, "RASTERSIZE", raster);
     g_ov.bar = dlg;
     return dlg;
+}
+
+// Bottom-center of the overlay monitor, 12px above the work-area bottom,
+// pulled inside the work rect for narrow monitors or an edge taskbar.
+static BOOL placementBar(int barW, int barH, POINT *out) {
+    int workW, desiredX, desiredY;
+    if (g_ov.overlay == NULL || out == NULL) return FALSE;
+    if (barW <= 0) barW = PICKER_BAR_W;
+    if (barH <= 0) barH = PICKER_BAR_H;
+    workW = g_ov.work.right - g_ov.work.left;
+    desiredX = g_ov.work.left + (workW - barW) / 2;
+    desiredY = g_ov.work.bottom - barH - 12;
+    clampIntoWorkRect(desiredX, desiredY, barW, barH, &g_ov.work, out);
+    return TRUE;
 }
 
 // ---------------------------------------------------------------------------
@@ -720,8 +755,16 @@ UiPickerResult uiPickerPick(const char *exeName,
     }
     dlg = createToolbar();
     syncToolbar();
-    barX = g_ov.origin.x + (g_ov.bw - PICKER_BAR_W) / 2;
-    barY = g_ov.origin.y + g_ov.bh - PICKER_BAR_H - 12;
+    {
+        POINT barPos;
+        if (placementBar(g_ov.barW, g_ov.barH, &barPos)) {
+            barX = barPos.x;
+            barY = barPos.y;
+        } else {
+            barX = g_ov.origin.x + (g_ov.bw - PICKER_BAR_W) / 2;
+            barY = g_ov.origin.y + g_ov.bh - PICKER_BAR_H - 12;
+        }
+    }
     IupPopup(dlg, barX, barY);
 
     result = g_ov.result;
@@ -772,6 +815,10 @@ UiPickerResult uiPickerFinishForTest(void) {
 
 HWND uiPickerOverlayHwndForTest(void) { return g_ov.overlay; }
 
+BOOL uiPickerBarPlacementForTest(int barW, int barH, POINT *out) {
+    return placementBar(barW, barH, out);
+}
+
 void uiPickerSetLockedPidForTest(DWORD pid) {
     if (g_ov.m.locked < 0) return;
     g_ov.wins[g_ov.m.locked].pid = pid;
@@ -813,6 +860,10 @@ void uiPickerSetDragForTest(POINT screenA, POINT screenB) {
 BOOL uiPickerCompleteDragForTest(void) { return FALSE; }
 UiPickerResult uiPickerFinishForTest(void) { return UI_PICKER_CANCEL; }
 HWND uiPickerOverlayHwndForTest(void) { return NULL; }
+BOOL uiPickerBarPlacementForTest(int barW, int barH, POINT *out) {
+    (void)barW; (void)barH; (void)out;
+    return FALSE;
+}
 void uiPickerSetLockedPidForTest(DWORD pid) { (void)pid; }
 BOOL uiPickerTimerTickForTest(void) { return FALSE; }
 
