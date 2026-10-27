@@ -21,6 +21,11 @@
 #define PICKER_BAR_H       46
 
 #define PICKER_DIM_A       120
+// The locked window interior is visually clear but MUST stay clickable.
+// A layered window hit-tests alpha-0 pixels as transparent (clicks fall
+// through to the app underneath), so use the smallest non-zero alpha:
+// 1/255 darkening is invisible, yet the pixel still hits the overlay.
+#define PICKER_HOLE_A      1
 #define PICKER_BLUE        RGB(64, 158, 255)
 #define PICKER_ORANGE      RGB(255, 170, 60)
 #define PICKER_DIMRGB      RGB(10, 12, 16)
@@ -142,10 +147,11 @@ static void compDim(void) {
 
 static void compHole(RECT r) {
     int x, y;
+    unsigned int clear = premul(RGB(0, 0, 0), PICKER_HOLE_A);
     clipRect(&r);
     for (y = r.top; y < r.bottom; y++)
         for (x = r.left; x < r.right; x++)
-            g_ov.bits[(size_t)y * (size_t)g_ov.bw + x] = 0;
+            g_ov.bits[(size_t)y * (size_t)g_ov.bw + x] = clear;
 }
 
 static void compFrame(RECT r, COLORREF c) {
@@ -634,6 +640,19 @@ static Ihandle *darkButton(const char *title, Icallback cb) {
     return b;
 }
 
+// Zero native chrome for the bottom toolbar. MINBOX/MAXBOX=NO are load
+// bearing: BORDER/TITLEBAR/MENUBOX/RESIZE=NO alone leave WS_CAPTION on
+// (framework finding, IUP 3.30 Win64 probed on Win11), producing a ~29px
+// white caption strip that hides the client.
+static void setToolbarChrome(Ihandle *dlg) {
+    IupSetAttribute(dlg, "BORDER", "NO");
+    IupSetAttribute(dlg, "TITLEBAR", "NO");
+    IupSetAttribute(dlg, "MENUBOX", "NO");
+    IupSetAttribute(dlg, "RESIZE", "NO");
+    IupSetAttribute(dlg, "MINBOX", "NO");
+    IupSetAttribute(dlg, "MAXBOX", "NO");
+}
+
 static Ihandle *createToolbar(void) {
     Ihandle *row, *dlg;
     char raster[32];
@@ -650,18 +669,7 @@ static Ihandle *createToolbar(void) {
     IupSetAttribute(row, "MARGIN", "8x6");
     IupSetAttribute(row, "BGCOLOR", PICKER_BARBG);
     dlg = IupDialog(row);
-    IupSetAttribute(dlg, "BORDER", "NO");
-    IupSetAttribute(dlg, "TITLEBAR", "NO");
-    IupSetAttribute(dlg, "MENUBOX", "NO");
-    IupSetAttribute(dlg, "RESIZE", "NO");
-    // Framework finding (IUP 3.30 Win64, probed on Win11): BORDER/TITLEBAR/
-    // MENUBOX/RESIZE=NO alone leave WS_CAPTION on the native window while
-    // MINBOX/MAXBOX keep their YES defaults — the popup then carries a ~29px
-    // white caption strip and only a sliver of dark client is visible (the
-    // "empty white pill" toolbar bug). Turning the caption buttons off as
-    // well strips WS_CAPTION and yields a zero-chrome WS_POPUP.
-    IupSetAttribute(dlg, "MINBOX", "NO");
-    IupSetAttribute(dlg, "MAXBOX", "NO");
+    setToolbarChrome(dlg);
     IupSetAttribute(dlg, "TOPMOST", "YES");
     IupSetAttribute(dlg, "BGCOLOR", PICKER_BARBG);
     IupSetCallback(dlg, "K_ANY", (Icallback)barKeyCb);

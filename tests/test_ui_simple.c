@@ -90,6 +90,27 @@ static int recyclePickTimerCb(Ihandle *t) {
         assert(br.bottom <= mi.rcWork.bottom);
     }
     assert(uiPickerOverlayHwndForTest() != NULL);
+    // Layered windows hit-test only pixels with non-zero alpha: alpha-0
+    // pixels are mouse-transparent. The locked window interior was fully
+    // cleared, so button-downs and mouse-moves there fell through to the
+    // app underneath (its text got drag-selected) and a band could only
+    // start from a painted pixel such as the frame edge. The interior
+    // must carry the smallest non-zero alpha instead: WindowFromPoint at
+    // the locked client center has to hit OUR overlay, not the fixture.
+    {
+        POINT c0 = {0, 0}, c;
+        RECT cr;
+        HWND hit;
+        assert(GetClientRect(g_recycleHwnd, &cr));
+        c = c0;
+        ClientToScreen(g_recycleHwnd, &c);
+        c.x += cr.right / 2;
+        c.y += cr.bottom / 2;
+        hit = WindowFromPoint(c);
+        assert(hit != NULL);
+        assert(GetAncestor(hit, GA_ROOT)
+               == uiPickerOverlayHwndForTest());
+    }
     // Same HWND value, different current owner: the pinned pid no longer
     // matches, so every gate must fail closed.
     uiPickerSetLockedPidForTest(0x0DEFACEDu);
