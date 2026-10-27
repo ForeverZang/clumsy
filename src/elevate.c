@@ -5,6 +5,7 @@
 #include <Windows.h>
 #include <VersionHelpers.h>
 #include "common.h"
+#include "i18n.h"
 
 // 
 //   FUNCTION: IsRunAsAdmin()
@@ -98,6 +99,17 @@ BOOL IsElevated( ) {
     return fRet;
 }
 
+// Show a localized message box. UI strings are UTF-8 (i18n); MessageBoxA
+// would render them as ANSI mojibake, so convert and go through MessageBoxW.
+static void elevateMessageBox(HWND hWnd, const char *textKey) {
+    wchar_t text[512];
+    wchar_t title[128];
+    MultiByteToWideChar(CP_UTF8, 0, tr(textKey), -1, text, ARRAYSIZE(text));
+    MultiByteToWideChar(CP_UTF8, 0, tr("app.title"), -1, title,
+                        ARRAYSIZE(title));
+    MessageBoxW(hWnd, text, title, MB_OK | MB_ICONWARNING);
+}
+
 // try elevate and error out when can't happen
 // is silent then no message boxes are shown
 // return whether to close the program
@@ -105,8 +117,7 @@ BOOL tryElevate(HWND hWnd, BOOL silent) {
     // Check the current process's "run as administrator" status.
     BOOL fIsRunAsAdmin;
     if (!IsWindowsVistaOrGreater()) {
-        if (!silent) MessageBox(hWnd, (LPCSTR)"Unsupported Windows version. clumsy only supports Windows Vista or above.",
-            (LPCSTR)"Aborting", MB_OK);
+        if (!silent) elevateMessageBox(hWnd, "error.elevateUnsupported");
         return TRUE;
     }
 
@@ -118,32 +129,30 @@ BOOL tryElevate(HWND hWnd, BOOL silent) {
     // when not silent then trying to reinvoke to elevate
     if (!silent) {
         wchar_t szPath[MAX_PATH];
-        if (GetModuleFileName(NULL, (LPSTR)szPath, ARRAYSIZE(szPath)))
+        if (GetModuleFileNameW(NULL, szPath, ARRAYSIZE(szPath)))
         {
             // Launch itself as administrator.
-            SHELLEXECUTEINFO sei = { sizeof(sei) };
-            sei.lpVerb = (LPSTR)"runas";
-            sei.lpFile = (LPSTR)szPath;
+            SHELLEXECUTEINFOW sei = { sizeof(sei) };
+            sei.lpVerb = L"runas";
+            sei.lpFile = szPath;
             sei.hwnd = hWnd;
             sei.nShow = SW_NORMAL;
 
             // here it is restartintg the program using run as
             LOG("Try elevating by runas");
-            if (!ShellExecuteEx(&sei))
+            if (!ShellExecuteExW(&sei))
             {
                 DWORD dwError = GetLastError();
                 if (dwError == ERROR_CANCELLED)
                 {
                     // The user refused the elevation.
                     // alert and exit
-                    MessageBox(hWnd, (LPCSTR)"clumsy needs to be elevated to work. Run as Administrator or click Yes in promoted UAC dialog",
-                        (LPCSTR)"Aborting", MB_OK);
+                    elevateMessageBox(hWnd, "error.elevateRefused");
                 }
             }
             // runas executed.
         } else {
-            MessageBox(hWnd, (LPCSTR)"Failed to get clumsy path. Please place the executable in a normal directory.",
-                (LPCSTR)"Aborting", MB_OK);
+            elevateMessageBox(hWnd, "error.elevateBadPath");
         }
     }
 

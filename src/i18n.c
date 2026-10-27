@@ -76,6 +76,12 @@ static const I18nEntry g_table[] = {
                                 "The WinDivert driver failed to load; check that antivirus is not blocking it"},
     {"error.generic",           "操作失败，请重试",
                                 "The operation failed, please try again"},
+    {"error.elevateRefused",    "需要管理员权限才能正常工作：请在弹出的 UAC 对话框中点击“是”，或以管理员身份重新运行",
+                                "clumsy needs administrator rights: click Yes in the UAC prompt, or run as administrator"},
+    {"error.elevateBadPath",    "无法获取自身路径，请将程序放到普通目录后重试",
+                                "Failed to get the executable path. Move clumsy to a normal folder and try again"},
+    {"error.elevateUnsupported","当前 Windows 版本过低，仅支持 Windows Vista 及以上版本",
+                                "Unsupported Windows version. clumsy supports Windows Vista or above"},
 
     // Main-window tabs and advanced surface
     {"tab.basic",          "基础功能", "Basic"},
