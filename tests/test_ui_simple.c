@@ -33,6 +33,22 @@ static int fakeActionCb(Ihandle *ih) { (void)ih; g_fakeFired = 1;
 // recycled onto another process mid-pick.
 static HWND g_recycleHwnd;
 static int g_recyclePhase;
+
+// Production invariant: the picker only opens while clumsy itself is the
+// foreground app (the user clicked its button), so the popup bar owns the
+// foreground outright. A test exe launched from a console does not, and
+// Windows then keeps granting/revoking pending foreground requests
+// asynchronously, which moves z-order under our assertions. Recreate the
+// production precondition explicitly.
+static void forceBarForegroundForTest(HWND bar) {
+    DWORD fgTid = GetWindowThreadProcessId(GetForegroundWindow(), NULL);
+    DWORD me = GetCurrentThreadId();
+    if (fgTid != me && fgTid != 0) AttachThreadInput(me, fgTid, TRUE);
+    SetForegroundWindow(bar);
+    BringWindowToTop(bar);
+    if (fgTid != me && fgTid != 0) AttachThreadInput(me, fgTid, FALSE);
+}
+
 static int recyclePickTimerCb(Ihandle *t) {
     IupSetAttribute(t, "RUN", "NO");
     // While the overlay is up, the bottom toolbar placement seam must
@@ -88,6 +104,10 @@ static int recyclePickTimerCb(Ihandle *t) {
         assert(br.top >= mi.rcWork.top);
         assert(br.right <= mi.rcWork.right);
         assert(br.bottom <= mi.rcWork.bottom);
+        // Recreate the production precondition (clumsy itself is the
+        // foreground app when the picker opens) so the activation pins
+        // below are deterministic in a console-launched test exe.
+        forceBarForegroundForTest(bar);
     }
     assert(uiPickerOverlayHwndForTest() != NULL);
     // Layered windows hit-test only pixels with non-zero alpha: alpha-0
@@ -111,6 +131,46 @@ static int recyclePickTimerCb(Ihandle *t) {
         assert(GetAncestor(hit, GA_ROOT)
                == uiPickerOverlayHwndForTest());
     }
+    // Regression pins for "toolbar buttons dead after drawing a band":
+    // a click on the overlay must never activate or focus this
+    // full-work-area topmost window, otherwise it rises above the
+    // toolbar popup and every later bar click hits the overlay and
+    // starts a stray band (the phantom band at the bar edge seen on the
+    // shipped build). Proven end-to-end with injected real input:
+    // NOACTIVATE + MA_NOACTIVATE alone were insufficient, because the
+    // WM_LBUTTONDOWN handler's SetFocus activated and raised the window
+    // anyway.
+    //
+    // Pin three runs while the lock is ALIVE: overlay-client (10,10) is
+    // the work-area origin +10, well outside the locked fixture rect, so
+    // the click neither locks a window nor starts a band -- it isolates
+    // the activation/focus behavior without tearing down the popup.
+    {
+        HWND ov2 = uiPickerOverlayHwndForTest();
+        HWND bar2 = uiPickerBarHwndForTest();
+        LONG_PTR ex2;
+        LRESULT ma;
+        assert(ov2 != NULL && bar2 != NULL);
+        (void)bar2;
+        // Pin one: WS_EX_NOACTIVATE on the window style.
+        ex2 = GetWindowLongPtrW(ov2, GWL_EXSTYLE);
+        assert(ex2 & WS_EX_NOACTIVATE);
+        // Pin two: WM_MOUSEACTIVATE answers MA_NOACTIVATE — no activation,
+        // but the click message is still delivered (not ...ANDEAT).
+        ma = SendMessageW(ov2, WM_MOUSEACTIVATE, (WPARAM)ov2,
+                          MAKELPARAM(HTCLIENT, WM_LBUTTONDOWN));
+        assert(ma == MA_NOACTIVATE);
+        // Pin three: the button-down handler must not SetFocus the
+        // overlay — focusing a top-level window activates and raises it
+        // even when WM_MOUSEACTIVATE refused activation. The lock is
+        // alive and the point is outside the locked client rect, so the
+        // click changes no picker state; it isolates focus.
+        SendMessageW(ov2, WM_LBUTTONDOWN, (WPARAM)MK_LBUTTON,
+                     MAKELPARAM(10, 10));
+        assert(GetActiveWindow() != ov2);
+        assert(GetForegroundWindow() != ov2);
+        assert(GetFocus() != ov2);
+    }
     // Same HWND value, different current owner: the pinned pid no longer
     // matches, so every gate must fail closed.
     uiPickerSetLockedPidForTest(0x0DEFACEDu);
@@ -123,6 +183,24 @@ static int recyclePickTimerCb(Ihandle *t) {
         b.x = r.left + (r.right - r.left) * 6 / 8;
         b.y = r.top + (r.bottom - r.top) * 6 / 8;
         uiPickerSetDragForTest(a, b);
+        // After a drag's present() cycle the toolbar must still be the
+        // topmost clickable window over its own rect: a click on a
+        // toolbar button must not land on the full-work-area overlay
+        // (which would start another band instead of pressing the
+        // button). WindowFromPoint here must root at the toolbar HWND.
+        {
+            HWND bar2 = uiPickerBarHwndForTest();
+            RECT b2;
+            POINT bc2;
+            HWND hit2;
+            assert(bar2 != NULL);
+            assert(GetWindowRect(bar2, &b2));
+            bc2.x = (b2.left + b2.right) / 2;
+            bc2.y = (b2.top + b2.bottom) / 2;
+            hit2 = WindowFromPoint(bc2);
+            assert(hit2 != NULL);
+            assert(GetAncestor(hit2, GA_ROOT) == bar2);
+        }
         assert(!uiPickerCompleteDragForTest()); // band refused, no rect
         assert(uiPickerFinishForTest() == UI_PICKER_WINDOW_DIED);
     } else {

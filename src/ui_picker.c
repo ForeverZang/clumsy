@@ -486,11 +486,18 @@ static POINT clientToScreenPoint(LPARAM lp) {
 static LRESULT CALLBACK overlayWndProc(HWND hwnd, UINT msg,
                                        WPARAM wp, LPARAM lp) {
     switch (msg) {
+    case WM_MOUSEACTIVATE:
+        // Take the click without becoming active: MA_NOACTIVATE still
+        // delivers WM_LBUTTONDOWN, but the window is neither activated
+        // nor raised, so the topmost toolbar stays above the overlay.
+        return MA_NOACTIVATE;
     case WM_LBUTTONDOWN: {
         POINT p = clientToScreenPoint(lp);
         // No SetCapture: the overlay covers the whole work area, and a
         // capture would swallow clicks meant for the bottom toolbar.
-        SetFocus(hwnd);
+        // No SetFocus either: focusing a top-level window activates and
+        // raises it even when WM_MOUSEACTIVATE refused activation. Escape
+        // stays bound to the toolbar dialog (barKeyCb, K_ANY).
         if (g_ov.m.phase == PICKER_PHASE_FRAME) {
             long idx = windowIndexAt(p);
             if (idx >= 0
@@ -541,6 +548,10 @@ static LRESULT CALLBACK overlayWndProc(HWND hwnd, UINT msg,
         }
         return 0;
     case WM_KEYDOWN:
+        // Defense in depth: with WS_EX_NOACTIVATE and no SetFocus the
+        // overlay can never get keyboard focus in production, so Esc is
+        // normally handled by barKeyCb on the toolbar dialog. Keep this
+        // for the case where focus somehow lands here anyway.
         if (wp == VK_ESCAPE) finishPick(UI_PICKER_CANCEL);
         return 0;
     case WM_TIMER:
@@ -600,8 +611,14 @@ static BOOL createOverlay(void) {
                             L"Microsoft YaHei UI");
     g_ov.oldFont = SelectObject(g_ov.memdc, g_ov.font);
 
+    // WS_EX_NOACTIVATE: clicking the overlay must never activate it.
+    // Activation raises this full-work-area window to the top of the
+    // topmost band, above the toolbar popup, after which clicks on the
+    // toolbar hit the overlay and start stray bands. WM_MOUSEACTIVATE in
+    // the wndproc says the same thing on the input path.
     g_ov.overlay = CreateWindowExW(
-        WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_TOOLWINDOW,
+        WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_TOOLWINDOW
+        | WS_EX_NOACTIVATE,
         L"ClumsyOcrPickerOverlay", L"", WS_POPUP,
         mi.rcWork.left, mi.rcWork.top, w, h,
         NULL, NULL, GetModuleHandleW(NULL), NULL);
