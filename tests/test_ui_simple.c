@@ -391,8 +391,9 @@ int main(void) {
             // NUMLIN and reads -1 before map, so an empty table cannot
             // advertise visible rows through that attribute. The fixed
             // height is pinned as a height-only RASTERSIZE "0xH"; the
-            // pins measured on this build's 25px data rows plus the
-            // ~24px explicit title band (4-row window 134px, 3-row 109px).
+            // shared pin measured on this build's 25px data rows plus
+            // the ~24px explicit title band: both tables keep the same
+            // 134px 4-row window so the side-by-side frames match.
             {
                 int pinH(const char *rs) {
                     const char *x = strchr(rs, 'x');
@@ -404,7 +405,7 @@ int main(void) {
                 assert(IupGetInt(rm0, "NUMLIN") == 0);
                 assert(IupGetInt(gm0, "NUMLIN") == 0);
                 assert(pinH(IupGetAttribute(rm0, "RASTERSIZE")) == 134);
-                assert(pinH(IupGetAttribute(gm0, "RASTERSIZE")) == 109);
+                assert(pinH(IupGetAttribute(gm0, "RASTERSIZE")) == 134);
             }
 
             // The region and group tables sit side by side (hbox): the
@@ -874,12 +875,37 @@ int main(void) {
                 uiOcrAppendLog(first);
                 assert(strcmp(IupGetAttribute(uiOcrLogForTest(), "VALUE"),
                               first) == 0);
+                // Newest line stays on top: TOPLINE pins the view at line 1.
+                assert(IupGetInt(uiOcrLogForTest(), "TOPLINE") == 1);
                 uiOcrAppendLog(second);
                 {
                     const char *v =
                         IupGetAttribute(uiOcrLogForTest(), "VALUE");
-                    assert(strncmp(v, first, strlen(first)) == 0);
-                    assert(strstr(v, second) != NULL);
+                    // Reverse chronological order: the second append is
+                    // now the head line, the first append below it.
+                    assert(strncmp(v, second, strlen(second)) == 0);
+                    assert(v[strlen(second)] == '\n');
+                    assert(strcmp(v + strlen(second) + 1, first) == 0);
+                }
+                assert(IupGetInt(uiOcrLogForTest(), "TOPLINE") == 1);
+
+                // Cap: past 500 lines the OLDEST tail lines drop while
+                // the newest line stays at the head.
+                for (i = 0; i < 600; i++) {
+                    char ln[16];
+                    snprintf(ln, sizeof(ln), "L%d", i);
+                    uiOcrAppendLog(ln);
+                }
+                {
+                    const char *v =
+                        IupGetAttribute(uiOcrLogForTest(), "VALUE");
+                    size_t lines = 1;
+                    const char *p;
+                    assert(strncmp(v, "L599\n", 5) == 0);
+                    for (p = v; *p; p++)
+                        if (*p == '\n') lines++;
+                    assert(lines == 500);
+                    assert(strcmp(v + strlen(v) - 4, "L100") == 0);
                 }
             }
 
@@ -1227,7 +1253,7 @@ int main(void) {
                     gh = IupGetAttribute(uiOcrGroupsMatrixForTest(),
                                          "RASTERSIZE");
                     assert(atoi(strchr(rh, 'x') + 1) == 134);
-                    assert(atoi(strchr(gh, 'x') + 1) == 109);
+                    assert(atoi(strchr(gh, 'x') + 1) == 134);
                 }
                 // Column geometry on the live tables (user report:
                 // "选择后，显示不全" -- picked rows painted as blank

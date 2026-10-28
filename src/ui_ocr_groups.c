@@ -22,8 +22,9 @@
  * second.
  */
 
-#define REGION_LINES_VISIBLE 4
-#define GROUP_LINES_VISIBLE  3
+// Both side-by-side tables share one geometry so the rule-group frame
+// and the recognition-region frame always have equal heights.
+#define MATRIX_LINES_VISIBLE 4
 
 // IupMatrix fixed-height geometry, measured on the Win64 IUP 3.30 build
 // with the default font (96 DPI). Data rows keep IUP's built-in default
@@ -35,14 +36,13 @@
 // height-only RASTERSIZE ("0xH" -- width 0 leaves horizontal EXPAND to
 // the container). The RASTERHEIGHT value 17 is IUP's character-unit
 // number: with the default font the title band paints ~24px and a data
-// row 25px (pixel-measured in the scratch visual harness). The pins are
-// exactly a title band, N data rows and a ~10px peek strip --
-// 134 = 24 + 4*25 + 10, 109 = 24 + 3*25 + 10 -- so the table hints at
-// more rows without changing size as NUMLIN grows; at 134px and 5 rows
-// NUMLIN_VISIBLE reads 4 (probe-verified).
+// row 25px (pixel-measured in the scratch visual harness). The shared
+// pin is exactly a title band, 4 data rows and a ~10px peek strip --
+// 134 = 24 + 4*25 + 10 -- so the tables hint at more rows without
+// changing size as NUMLIN grows; at 134px and 5 rows NUMLIN_VISIBLE
+// reads 4 (probe-verified).
 #define MATRIX_TITLE_HEIGHT_CHARS 17
-#define REGION_MATRIX_PIN_PX     134
-#define GROUP_MATRIX_PIN_PX      109
+#define MATRIX_PIN_PX            134
 // Geometry strings handed to RASTERWIDTH/RASTERHEIGHT: this IUP build
 // stores the caller's pointer and rewrites it in place (pixels -> char
 // units), so every column/row needs its own permanent buffer. 16 bytes
@@ -314,12 +314,12 @@ static void refreshMatrices(void) {
         // with fewer rows clamps the stored value down to NUMLIN and
         // IUP does not restore it when rows grow back. The RASTERSIZE
         // pin keeps the visual height constant either way.
-        IupSetInt(g_regionMatrix, "NUMLIN_VISIBLE", REGION_LINES_VISIBLE);
+        IupSetInt(g_regionMatrix, "NUMLIN_VISIBLE", MATRIX_LINES_VISIBLE);
         IupUpdate(g_regionMatrix);
     }
     if (g_groupMatrix != NULL) {
         IupSetInt(g_groupMatrix, "NUMLIN", (int)g_groupCount);
-        IupSetInt(g_groupMatrix, "NUMLIN_VISIBLE", GROUP_LINES_VISIBLE);
+        IupSetInt(g_groupMatrix, "NUMLIN_VISIBLE", MATRIX_LINES_VISIBLE);
         IupUpdate(g_groupMatrix);
     }
 }
@@ -569,13 +569,13 @@ Ihandle *uiOcrGroupsCreate(void) {
     static const int groupWidths[6] = { 46, 192, 150, 40, 48, 48 };
     Ihandle *regionFrame, *groupFrame, *root, *regionBtnRow, *groupBtnRow;
 
-    g_regionMatrix = newMatrix(3, REGION_LINES_VISIBLE,
-        REGION_MATRIX_PIN_PX,
+    g_regionMatrix = newMatrix(3, MATRIX_LINES_VISIBLE,
+        MATRIX_PIN_PX,
         (Icallback)regionValueCb, (Icallback)regionReadonlyCb,
         (Icallback)regionClickCb, NULL, NULL, NULL,
         (Icallback)regionChangedCb, regionWidths);
-    g_groupMatrix = newMatrix(5, GROUP_LINES_VISIBLE,
-        GROUP_MATRIX_PIN_PX,
+    g_groupMatrix = newMatrix(5, MATRIX_LINES_VISIBLE,
+        MATRIX_PIN_PX,
         (Icallback)groupValueCb, (Icallback)groupReadonlyCb,
         (Icallback)groupClickCb, (Icallback)groupDblClickCb,
         (Icallback)groupDblClickCb, (Icallback)groupFgCb, NULL,

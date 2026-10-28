@@ -30,31 +30,35 @@ static size_t countLines(const char *s) {
 
 static void rebuildLog(void) {
     IupStoreAttribute(g_log, "VALUE", g_logText != NULL ? g_logText : "");
-    // Keep the newest line visible: TOPLINE clamps to the last line when
-    // the value is past the end (native multiline behavior).
-    IupSetInt(g_log, "TOPLINE", (int)countLines(g_logText) + 1);
+    // Reverse chronological order: the newest line is the head line, so
+    // pin the view to line 1 instead of scrolling to the bottom.
+    IupSetInt(g_log, "TOPLINE", 1);
 }
 
 void uiOcrAppendLog(const char *line) {
     char *grown;
+    size_t lineLen;
     size_t oldLen = g_logText != NULL ? strlen(g_logText) : 0;
     if (line == NULL || g_log == NULL) return;
 
-    grown = realloc(g_logText, oldLen + strlen(line) + 2);
+    lineLen = strlen(line);
+    grown = realloc(g_logText, oldLen + lineLen + 2);
     if (grown == NULL) return;
     g_logText = grown;
-    // realloc(NULL,...) (the first append) leaves the bytes
-    // uninitialized: terminate at oldLen before any strcat, or the
-    // newline/line land after heap garbage and corrupt the heap.
-    g_logText[oldLen] = '\0';
-    if (oldLen > 0) strcat(g_logText, "\n");
-    strcat(g_logText, line);
+    // Head insertion ("line\noldText"); memmove handles the overlap of
+    // shifting the existing content right within the grown block.
+    if (oldLen > 0) {
+        memmove(g_logText + lineLen + 1, g_logText, oldLen + 1);
+    }
+    memcpy(g_logText, line, lineLen);
+    g_logText[lineLen] = oldLen > 0 ? '\n' : '\0';
+    if (oldLen > 0) g_logText[lineLen + 1 + oldLen] = '\0';
 
-    // Keep a bounded tail: drop whole leading lines past the cap.
+    // Bounded head: drop whole OLDEST tail lines past the cap.
     while (countLines(g_logText) >= OCR_LOG_MAX_LINES) {
-        char *nl = strchr(g_logText, '\n');
+        char *nl = strrchr(g_logText, '\n');
         if (nl == NULL) break;
-        memmove(g_logText, nl + 1, strlen(nl + 1) + 1);
+        *nl = '\0';
     }
     rebuildLog();
 }
