@@ -236,6 +236,17 @@ static const I18nEntry g_table[] = {
     {"ocr.log.unavailable",  "区域「%s」抓取不可用，本次跳过",
                              "Region \"%s\" is unavailable; skipped this poll"},
     {"ocr.log.emptyText",    "（无文字）", "(no text)"},
+    {"ocr.log.scan.ok",      "识别区域 %s 识别成功：%s",
+                             "Region %s recognized: %s"},
+    {"ocr.log.scan.unchanged",
+                             "识别区域 %s 画面未变化，沿用文字：%s",
+                             "Region %s unchanged; reused text: %s"},
+    {"ocr.log.scan.capture", "识别区域 %s 抓取画面失败，本次跳过",
+                             "Region %s screen capture failed; skipped this cycle"},
+    {"ocr.log.scan.blank",   "识别区域 %s 抓到空画面（锁屏或独占全屏？），本次跳过",
+                             "Region %s got a blank frame (locked screen or exclusive fullscreen?); skipped"},
+    {"ocr.log.scan.read",    "识别区域 %s 文字识别失败，本次跳过",
+                             "Region %s OCR read failed; skipped this cycle"},
 };
 
 static Lang g_lang = LANG_EN;

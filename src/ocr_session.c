@@ -47,14 +47,16 @@ static void appendEvent(OcrSessionEvent *ev, int *n, int cap, int group,
                         int lossPercent, const char *name, const char *text) {
     if (*n >= cap) return;
     ev[*n].groupIndex = group;
+    ev[*n].regionIndex = -1;
     ev[*n].lossPercent = lossPercent;
     ev[*n].event = name;
     ev[*n].text = text;
+    ev[*n].status = NULL;
     (*n)++;
 }
 
 static char *claimTextSlot(OcrSession *s, const char *text) {
-    if (s->evTextNext >= OCR_MAX_GROUPS) return NULL;
+    if (s->evTextNext >= OCR_MAX_REGIONS + OCR_MAX_GROUPS) return NULL;
     char *slot = s->evText[s->evTextNext++];
     strncpy(slot, text ? text : "", OCR_EVENT_TEXT - 1);
     slot[OCR_EVENT_TEXT - 1] = '\0';
@@ -87,6 +89,46 @@ static void writeTimeline(OcrSession *s, const char *event, int gi,
     (void)ocrTimelineEvent(s->timeline, &t);
 }
 
+// Timeline identity for per-region scan rows: region column
+// "region N", source column "region:N" (1-based), outcome in note.
+static void writeScanTimeline(OcrSession *s, int ri, const char *status,
+                              const char *text) {
+    if (!s->timeline) return;
+
+    char label[24];
+    char source[32];
+    snprintf(label, sizeof(label), "region %d", ri + 1);
+    snprintf(source, sizeof(source), "region:%d", ri + 1);
+
+    OcrTimelineEvent t;
+    memset(&t, 0, sizeof(t));
+    t.timeMs = sessionNow(s);
+    t.event = "scan";
+    t.region = label;
+    t.ocrText = (text && text[0]) ? text : NULL;
+    t.lossPercent = -1;
+    t.source = source;
+    t.note = status;
+    (void)ocrTimelineEvent(s->timeline, &t);
+}
+
+// One per referenced region per pump, emitted BEFORE the group events so
+// the log reads "recognition process first, consequences after".
+static void emitScan(OcrSession *s, int ri, const char *status,
+                     const char *text, OcrSessionEvent *ev,
+                     int *n, int cap) {
+    writeScanTimeline(s, ri, status, text);
+    if (*n >= cap) return;
+    char *slot = claimTextSlot(s, text ? text : "");
+    ev[*n].groupIndex = -1;
+    ev[*n].regionIndex = ri;
+    ev[*n].lossPercent = -1;
+    ev[*n].event = "scan";
+    ev[*n].text = slot != NULL ? slot : "";
+    ev[*n].status = status;
+    (*n)++;
+}
+
 static void emitUnavailable(OcrSession *s, int gi,
                             OcrSessionEvent *ev, int *n, int cap) {
     OcrSessionGroup *sg = &s->groups[gi];
@@ -115,10 +157,14 @@ static BOOL targetAlive(const OcrSession *s) {
     return !s->targetAliveFn || s->targetAliveFn(&s->target);
 }
 
-// One capture+OCR attempt on one physical region.
-#define REGION_UNAVAILABLE 0 // capture or OCR failed
-#define REGION_READ        1 // *text holds fresh OCR text
-#define REGION_UNCHANGED  -1 // change detection skipped OCR this tick
+// One capture+OCR attempt on one physical region. The distinct failure
+// codes feed the per-pump scan event so the log says WHY recognition
+// did not produce text.
+#define REGION_CAPTURE_FAIL 0 // screen capture itself failed
+#define REGION_READ         1 // *text holds fresh OCR text
+#define REGION_UNCHANGED   -1 // change detection skipped OCR this tick
+#define REGION_BLANK        2 // captured a black/no-picture frame
+#define REGION_READ_FAIL    3 // OCR engine reported failure
 static int readPhysicalRegion(OcrSession *s, size_t ri, char *text,
                               size_t textCap) {
     OcrSessionRegion *rgn = &s->regions[ri];
@@ -127,14 +173,15 @@ static int readPhysicalRegion(OcrSession *s, size_t ri, char *text,
     int w = 0, h = 0;
     char localErr[MSG_BUFSIZE];
     if (!s->captureFn(s->target.hwnd, &rc, &bgra, &w, &h, localErr)) {
-        return REGION_UNAVAILABLE;
+        return REGION_CAPTURE_FAIL;
     }
     // PrintWindow success with a black/no-picture frame (locked desktop,
-    // exclusive fullscreen) is not empty OCR text: treat it as
-    // unavailable so no armed group can fire on a frame we never got.
+    // exclusive fullscreen) is not empty OCR text: classify it as a
+    // blank-frame failure so no armed group can fire on a frame we never
+    // got, and the scan log can name the cause distinctly.
     if (captureFrameBlank(bgra, w, h)) {
         captureFreeBitmap(bgra);
-        return REGION_UNAVAILABLE;
+        return REGION_BLANK;
     }
 
     unsigned char gray[OCR_THUMB_W * OCR_THUMB_MAX_H];
@@ -155,7 +202,7 @@ static int readPhysicalRegion(OcrSession *s, size_t ri, char *text,
 
     BOOL ok = s->readFn(s->engine, bgra, w, h, text, textCap, localErr);
     captureFreeBitmap(bgra);
-    return ok ? REGION_READ : REGION_UNAVAILABLE;
+    return ok ? REGION_READ : REGION_READ_FAIL;
 }
 
 // Member OCR texts in member order joined with " | ", truncated to cap-1.
@@ -185,18 +232,34 @@ static void joinMemberTexts(const OcrGroup *g, const OcrRegionObs *obs,
     }
 }
 
-// Read every referenced physical region once, filling this tick's obs.
+// Outcome code -> static scan status name used by event/CSV/log.
+static const char *scanStatusName(int code) {
+    switch (code) {
+    case REGION_READ:        return "ok";
+    case REGION_UNCHANGED:   return "unchanged";
+    case REGION_BLANK:       return "blank_frame";
+    case REGION_READ_FAIL:   return "read_fail";
+    case REGION_CAPTURE_FAIL:
+    default:                 return "capture_fail";
+    }
+}
+
+// Read every referenced physical region once, filling this tick's obs
+// and per-region outcome codes (-1: unreferenced, no event emitted).
 // Unreferenced regions are never captured.
 static void readReferencedUnion(OcrSession *s, OcrRegionObs *obs,
-                                char readText[OCR_MAX_REGIONS][OCR_READ_TEXT]) {
+                                char readText[OCR_MAX_REGIONS][OCR_READ_TEXT],
+                                int codes[OCR_MAX_REGIONS]) {
     for (size_t i = 0; i < s->regionCount; i++) {
         obs[i].available = FALSE;
         obs[i].text = NULL;
+        codes[i] = -1;
         if (!s->referenced[i]) continue;
 
         OcrSessionRegion *rgn = &s->regions[i];
         int got = readPhysicalRegion(s, i, readText[i], OCR_READ_TEXT);
-        if (got == REGION_UNAVAILABLE) continue;
+        codes[i] = got;
+        if (got != REGION_READ && got != REGION_UNCHANGED) continue;
 
         // spec §5/§6.4: below the change threshold OCR is skipped and the
         // previous text is reused AS this period's observation. Thumb and
@@ -314,7 +377,19 @@ BOOL ocrSessionPump(OcrSession *s, OcrSessionEvent *ev, int *evCount,
 
     char readText[OCR_MAX_REGIONS][OCR_READ_TEXT];
     OcrRegionObs obs[OCR_MAX_REGIONS];
-    readReferencedUnion(s, obs, readText);
+    int scanCodes[OCR_MAX_REGIONS];
+    readReferencedUnion(s, obs, readText, scanCodes);
+
+    // One scan line per referenced region before any group consequence,
+    // so the log shows every recognition attempt, success or failure.
+    // REGION_UNCHANGED is encoded as -1, so gate on the referenced bit,
+    // never on the sign of the code.
+    for (size_t i = 0; i < s->regionCount; i++) {
+        if (!s->referenced[i]) continue;
+        emitScan(s, (int)i, scanStatusName(scanCodes[i]),
+                 obs[i].available ? obs[i].text : NULL,
+                 ev, evCount, evCap);
+    }
 
     int gearGroup = -1; // first firing group in table order wins gear
     for (size_t gi = 0; gi < s->groupCount; gi++) {

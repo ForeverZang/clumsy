@@ -63,14 +63,46 @@ static void glueOnLoss(int percent, void *user) {
 // Groups have no display name yet; the CSV/log identity is "group N"
 // (1-based, table order), matching the session's timeline rows.
 static const char *runGroupName(int index) {
-    static char fallback[16];
+    // 24 fits "group " (6) + any INT_MAX (10) + NUL, so -O2's
+    // -Wformat-truncation stays quiet even though groups are 0..15.
+    static char fallback[24];
     snprintf(fallback, sizeof(fallback), "group %d", index + 1);
     return fallback;
+}
+
+// Per-region recognition outcome line (one per referenced region per
+// tick). Region identity mirrors the tables' R1/R2 labels.
+static void glueOnScan(const OcrSessionEvent *ev, char *line, size_t cap) {
+    char rname[16];
+    const char *text = (ev->text && ev->text[0])
+                       ? ev->text : tr("ocr.log.emptyText");
+    snprintf(rname, sizeof(rname), "R%d", ev->regionIndex + 1);
+
+    if (strcmp(ev->status, "ok") == 0) {
+        snprintf(line, cap, tr("ocr.log.scan.ok"), rname, text);
+    } else if (strcmp(ev->status, "unchanged") == 0) {
+        snprintf(line, cap, tr("ocr.log.scan.unchanged"), rname, text);
+    } else if (strcmp(ev->status, "capture_fail") == 0) {
+        snprintf(line, cap, tr("ocr.log.scan.capture"), rname);
+    } else if (strcmp(ev->status, "blank_frame") == 0) {
+        snprintf(line, cap, tr("ocr.log.scan.blank"), rname);
+    } else if (strcmp(ev->status, "read_fail") == 0) {
+        snprintf(line, cap, tr("ocr.log.scan.read"), rname);
+    } else {
+        line[0] = '\0'; // unknown outcome: never log a half-built line
+    }
 }
 
 static void glueOnEvent(const OcrSessionEvent *ev, void *user) {
     char line[GLUE_LOG_CAP];
     (void)user;
+
+    if (strcmp(ev->event, "scan") == 0) {
+        glueOnScan(ev, line, sizeof(line));
+        if (line[0] != '\0') uiOcrAppendLog(line);
+        return;
+    }
+
     const char *name = runGroupName(ev->groupIndex);
 
     if (strcmp(ev->event, "rule_trigger") == 0) {

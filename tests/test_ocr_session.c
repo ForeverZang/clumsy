@@ -29,6 +29,7 @@ struct RegFake {
     int n;
     int captures;
     int reads;
+    BOOL failRead; // force the OCR read to report failure
 };
 
 #define PHYS_COUNT 3
@@ -95,6 +96,11 @@ static BOOL fakeRead(OcrEngine *engine, const unsigned char *bgra,
     int fi = bgra[4];
     struct RegFake *f = &g_reg[ri];
     f->reads++;
+    if (f->failRead) {
+        strncpy(err, "injected read failure", MSG_BUFSIZE - 1);
+        err[MSG_BUFSIZE - 1] = '\0';
+        return FALSE;
+    }
     const char *text = fi < f->n ? f->frames[fi].text : "";
     strncpy(out, text, cap - 1);
     out[cap - 1] = '\0';
@@ -175,6 +181,23 @@ static int countEvent(const OcrSessionEvent *ev, int n, const char *name) {
     return c;
 }
 
+static int findEvent(const OcrSessionEvent *ev, int n, const char *name) {
+    for (int i = 0; i < n; i++)
+        if (strcmp(ev[i].event, name) == 0) return i;
+    return -1;
+}
+
+// Index of the k-th (0-based) event with the given name, -1 if absent.
+static int findEventNth(const OcrSessionEvent *ev, int n, const char *name,
+                        int kth) {
+    for (int i = 0; i < n; i++) {
+        if (strcmp(ev[i].event, name) != 0) continue;
+        if (kth == 0) return i;
+        kth--;
+    }
+    return -1;
+}
+
 static void framesFor(int ri, const struct Frame *frames, int n) {
     g_reg[ri].frames = frames;
     g_reg[ri].n = n;
@@ -206,14 +229,23 @@ static void test_disappear_trigger(void) {
         int n = pumpOnce(&s, ev + total, (int)(16 - total));
         total += n;
     }
-    // Only the 4th pump fires; trigger produces two event rows.
-    assert(total == 2);
-    assert(strcmp(ev[0].event, "rule_trigger") == 0);
-    assert(ev[0].groupIndex == 0);
-    assert(ev[0].lossPercent == 95);
-    assert(strcmp(ev[1].event, "loss_change") == 0);
-    assert(ev[1].groupIndex == 0);
-    assert(ev[1].lossPercent == 95);
+    // Every pump reports one region scan before any group event; only
+    // the 4th pump additionally fires (trigger + loss_change).
+    assert(countEvent(ev, total, "scan") == 4);
+    assert(strcmp(ev[0].event, "scan") == 0);
+    assert(ev[0].regionIndex == 0);
+    assert(ev[0].groupIndex == -1);
+    assert(strcmp(ev[0].status, "ok") == 0);
+    assert(total == 6);
+    {
+        int trig = findEvent(ev, total, "rule_trigger");
+        int loss = findEvent(ev, total, "loss_change");
+        assert(trig == 4 && loss == 5);
+        assert(ev[trig].groupIndex == 0);
+        assert(ev[trig].lossPercent == 95);
+        assert(ev[loss].groupIndex == 0);
+        assert(ev[loss].lossPercent == 95);
+    }
 }
 
 // --- (b) two groups firing the same pump: both get rule_trigger rows, ----
@@ -258,13 +290,15 @@ static void test_two_groups_first_gear(void) {
         g_fakeNow += 1000;
         total += pumpOnce(&s, ev + total, (int)(16 - total));
     }
-    assert(total == 3);
-    assert(strcmp(ev[0].event, "rule_trigger") == 0);
-    assert(ev[0].groupIndex == 0 && ev[0].lossPercent == 95);
-    assert(strcmp(ev[1].event, "loss_change") == 0);
-    assert(ev[1].groupIndex == 0 && ev[1].lossPercent == 95);
-    assert(strcmp(ev[2].event, "rule_trigger") == 0);
-    assert(ev[2].groupIndex == 1 && ev[2].lossPercent == 50);
+    // 4 pumps x 2 region scans, with the final pump's group events last.
+    assert(countEvent(ev, total, "scan") == 8);
+    assert(total == 11);
+    assert(strcmp(ev[8].event, "rule_trigger") == 0);
+    assert(ev[8].groupIndex == 0 && ev[8].lossPercent == 95);
+    assert(strcmp(ev[9].event, "loss_change") == 0);
+    assert(ev[9].groupIndex == 0 && ev[9].lossPercent == 95);
+    assert(strcmp(ev[10].event, "rule_trigger") == 0);
+    assert(ev[10].groupIndex == 1 && ev[10].lossPercent == 50);
     assert(countEvent(ev, total, "rule_trigger") == 2);
     assert(countEvent(ev, total, "loss_change") == 1);
     ocrTimelineClose(s.timeline);
@@ -319,10 +353,12 @@ static void test_unavailable_holds_run(void) {
     assert(countEvent(ev, total, "capture_unavailable") == 1);
     assert(countEvent(ev, total, "rule_trigger") == 1);
     assert(countEvent(ev, total, "loss_change") == 1);
-    int trig = -1;
-    for (int i = 0; i < total; i++)
-        if (strcmp(ev[i].event, "rule_trigger") == 0) trig = i;
-    assert(trig == total - 2); // trigger is the last pump
+    // One scan attempt per pump, including the failed capture tick.
+    assert(countEvent(ev, total, "scan") == 4);
+    assert(strcmp(ev[findEventNth(ev, total, "scan", 1)].status,
+                  "capture_fail") == 0);
+    int trig = findEvent(ev, total, "rule_trigger");
+    assert(trig == total - 2); // scan, trigger, loss is the last pump
 }
 
 // --- (f) seed fully unavailable: fail closed until the first success, ----
@@ -353,11 +389,18 @@ static void test_unarmed_seed_fail_closed(void) {
     for (int i = 0; i < 5; i++) {
         g_fakeNow += 1000;
         total += pumpOnce(&s, ev + total, (int)(16 - total));
-        if (i < 3) assert(total == 0); // pumps 1..3 emit nothing
+        // The late-arming pumps 1..3 only report scans; no rule fires.
+        if (i < 3)
+            assert(countEvent(ev, total, "rule_trigger") == 0);
     }
-    assert(total == 2);
-    assert(strcmp(ev[0].event, "rule_trigger") == 0);
-    assert(ev[0].lossPercent == 95);
+    // Five scan lines plus the final trigger/loss pair.
+    assert(countEvent(ev, total, "scan") == 5);
+    assert(total == 7);
+    {
+        int trig = findEvent(ev, total, "rule_trigger");
+        assert(trig == 5);
+        assert(ev[trig].lossPercent == 95);
+    }
 }
 
 // --- (d) change detection: identical thumbnail skips read; changed frame -
@@ -423,21 +466,27 @@ static void test_change_gate_reuses_last_text_disappear(void) {
 
     OcrSessionEvent ev[8];
     g_fakeNow += 1000;
-    assert(pumpOnce(&s, ev, 8) == 0);
+    assert(pumpOnce(&s, ev, 8) == 1);
+    assert(strcmp(ev[0].event, "scan") == 0);
+    assert(strcmp(ev[0].status, "unchanged") == 0);
     assert(g_reg[0].reads == 1); // unchanged frame did not run OCR
 
     g_fakeNow += 1000;
-    assert(pumpOnce(&s, ev, 8) == 0);
+    assert(pumpOnce(&s, ev, 8) == 1);
+    assert(strcmp(ev[0].event, "scan") == 0);
+    assert(strcmp(ev[0].status, "ok") == 0);
     assert(g_reg[0].reads == 2); // changed frame ran OCR, run = 1 only
 
     g_fakeNow += 1000;
     int n = pumpOnce(&s, ev, 8);
-    assert(n == 2); // reused miss confirms and fires
+    assert(n == 3); // scan + trigger + loss: reused miss confirms
     assert(g_reg[0].reads == 2); // no extra OCR for the reused poll
-    assert(strcmp(ev[0].event, "rule_trigger") == 0);
-    assert(ev[0].lossPercent == 95);
-    assert(strcmp(ev[1].event, "loss_change") == 0);
+    assert(strcmp(ev[0].event, "scan") == 0);
+    assert(strcmp(ev[0].status, "unchanged") == 0);
+    assert(strcmp(ev[1].event, "rule_trigger") == 0);
     assert(ev[1].lossPercent == 95);
+    assert(strcmp(ev[2].event, "loss_change") == 0);
+    assert(ev[2].lossPercent == 95);
 }
 
 // --- (i) the reused text is the one the trigger row carries: an appear ---
@@ -461,15 +510,18 @@ static void test_change_gate_reuses_last_text_appear(void) {
 
     OcrSessionEvent ev[8];
     g_fakeNow += 1000;
-    assert(pumpOnce(&s, ev, 8) == 0);
+    assert(pumpOnce(&s, ev, 8) == 1);
+    assert(strcmp(ev[0].event, "scan") == 0);
+    assert(strcmp(ev[0].status, "ok") == 0);
     assert(g_reg[0].reads == 2);
     g_fakeNow += 1000;
     int n = pumpOnce(&s, ev, 8);
-    assert(n == 2);
+    assert(n == 3); // unchanged scan carries the reused trigger text
     assert(g_reg[0].reads == 2); // confirming frame skipped OCR
-    assert(strcmp(ev[0].event, "rule_trigger") == 0);
-    assert(ev[0].lossPercent == 50);
-    assert(ev[0].text && strcmp(ev[0].text, "重连") == 0);
+    assert(strcmp(ev[0].status, "unchanged") == 0);
+    assert(strcmp(ev[1].event, "rule_trigger") == 0);
+    assert(ev[1].lossPercent == 50);
+    assert(ev[1].text && strcmp(ev[1].text, "重连") == 0);
 }
 
 // --- (j) a captured-but-black frame (locked desktop, exclusive fullscreen)
@@ -508,6 +560,12 @@ static void test_blank_frame_is_unavailable(void) {
     assert(countEvent(ev, total, "capture_unavailable") == 2);
     assert(countEvent(ev, total, "rule_trigger") == 0);
     assert(g_reg[0].reads == 1); // black frames never reached OCR
+    // The three black ticks surface as per-region blank_frame scans even
+    // though their group-level unavailable lines are rate-limited.
+    assert(countEvent(ev, total, "scan") == 3);
+    for (int i = 0; i < 3; i++)
+        assert(strcmp(ev[findEventNth(ev, total, "scan", i)].status,
+                      "blank_frame") == 0);
 
     g_fakeNow = 8000;
     total += pumpOnce(&s, ev + total, (int)(16 - total));
@@ -515,9 +573,12 @@ static void test_blank_frame_is_unavailable(void) {
     total += pumpOnce(&s, ev + total, (int)(16 - total));
     assert(countEvent(ev, total, "rule_trigger") == 1);
     assert(countEvent(ev, total, "loss_change") == 1);
-    int trig = -1;
-    for (int i = 0; i < total; i++)
-        if (strcmp(ev[i].event, "rule_trigger") == 0) trig = i;
+    assert(countEvent(ev, total, "scan") == 5);
+    assert(strcmp(ev[findEventNth(ev, total, "scan", 3)].status, "ok")
+           == 0);
+    assert(strcmp(ev[findEventNth(ev, total, "scan", 4)].status, "ok")
+           == 0);
+    int trig = findEvent(ev, total, "rule_trigger");
     assert(trig == total - 2);
 }
 
@@ -568,6 +629,8 @@ static void test_target_identity_gate(void) {
     assert(g_reg[0].captures == 1); // seed only
     assert(countEvent(ev, total, "capture_unavailable") == 4);
     assert(countEvent(ev, total, "rule_trigger") == 0);
+    // Dead ticks capture nothing, so they emit no per-region scans.
+    assert(countEvent(ev, total, "scan") == 0);
 
     // Back to the real target: the 2-frame group fires, the 3-frame one
     // keeps waiting.
@@ -579,6 +642,7 @@ static void test_target_identity_gate(void) {
     assert(g_reg[0].captures == 3);
     assert(countEvent(ev, total, "rule_trigger") == 1);
     assert(countEvent(ev, total, "loss_change") == 1);
+    assert(countEvent(ev, total, "scan") == 2);
 }
 
 // --- AND truth table: a two-member group synthesizes one poll per tick; -
@@ -617,11 +681,19 @@ static void test_and_group_truth_table(void) {
     int total = 0;
     g_fakeNow = 1000;
     total += pumpOnce(&s, ev + total, (int)(16 - total));
-    assert(total == 0);
+    // Both members read: two scans, neither group event fires yet.
+    assert(total == 2);
+    assert(countEvent(ev, total, "scan") == 2);
+    assert(strcmp(ev[0].status, "ok") == 0);
+    assert(ev[0].text && strcmp(ev[0].text, "其他") == 0);
+    assert(strcmp(ev[1].status, "ok") == 0);
     g_fakeNow = 2000;
     total += pumpOnce(&s, ev + total, (int)(16 - total));
     assert(countEvent(ev, total, "capture_unavailable") == 1);
     assert(countEvent(ev, total, "rule_trigger") == 0);
+    // The failed member capture is its own scan line.
+    assert(strcmp(ev[findEventNth(ev, total, "scan", 2)].status,
+                  "capture_fail") == 0);
     g_fakeNow = 3000;
     total += pumpOnce(&s, ev + total, (int)(16 - total));
     assert(countEvent(ev, total, "rule_trigger") == 1);
@@ -658,7 +730,12 @@ static void test_union_capture_only_referenced(void) {
     assert(ocrSessionSeed(&s, err));
     OcrSessionEvent ev[8];
     g_fakeNow = 1000;
-    assert(pumpOnce(&s, ev, 8) == 0);
+    // Exactly one scan event, for the sole referenced region (R3).
+    assert(pumpOnce(&s, ev, 8) == 1);
+    assert(strcmp(ev[0].event, "scan") == 0);
+    assert(ev[0].regionIndex == 2);
+    assert(strcmp(ev[0].status, "ok") == 0);
+    assert(ev[0].text && strcmp(ev[0].text, "仓库") == 0);
 
     assert(g_reg[0].captures == 0);
     assert(g_reg[1].captures == 0);
@@ -700,10 +777,15 @@ static void test_lenient_seed(void) {
     total += pumpOnce(&s, ev + total, 8 - total);
     assert(g_sessionGroups[0].state.armed);
     assert(g_sessionGroups[0].state.stable == OCR_STABLE_PRESENT);
-    assert(total == 0); // arming tick can't trigger
+    // Arming tick: two scans (one member just became readable), no
+    // trigger, no unavailable line.
+    assert(countEvent(ev, total, "scan") == 2);
+    assert(countEvent(ev, total, "capture_unavailable") == 0);
+    assert(countEvent(ev, total, "rule_trigger") == 0);
     g_fakeNow = 2000;
     total += pumpOnce(&s, ev + total, 8 - total);
-    assert(total == 0);
+    assert(countEvent(ev, total, "scan") == 4);
+    assert(countEvent(ev, total, "rule_trigger") == 0);
 }
 
 // --- CSV identity and RFC4180 escaping: group columns + joined text. -----
@@ -733,8 +815,13 @@ static void test_csv_identity_and_escape(void) {
     total += pumpOnce(&s, ev + total, 8 - total);
     g_fakeNow += 1000;
     total += pumpOnce(&s, ev + total, 8 - total);
-    assert(total == 2);
-    assert(ev[0].text && strcmp(ev[0].text, "a,b\"c") == 0);
+    // Two scans plus the firing pump's trigger/loss pair.
+    assert(countEvent(ev, total, "scan") == 2);
+    assert(total == 4);
+    {
+        int trig = findEvent(ev, total, "rule_trigger");
+        assert(ev[trig].text && strcmp(ev[trig].text, "a,b\"c") == 0);
+    }
     ocrTimelineClose(s.timeline);
 
     FILE *f = fopen(path, "rb");
@@ -750,6 +837,142 @@ static void test_csv_identity_and_escape(void) {
                        "group:1,") != NULL);
     assert(strstr(csv, "loss_change,group 1,,,appear,50,group:1,")
            != NULL);
+    // Every pump additionally writes a per-region scan row: escaped
+    // text in ocr_text, source region:1, outcome in note.
+    assert(strstr(csv, "scan,region 1,\"a,b\"\"c\",,,,region:1,ok")
+           != NULL);
+    free(csv);
+}
+
+// --- (l) every referenced region emits one scan event per pump with the --
+//     exact outcome: capture_fail / blank_frame / read_fail / ok, plus a
+//     change-detection unchanged tick; a zero cap drops events silently. -
+
+static void test_scan_outcomes_and_cap(void) {
+    OcrSession s;
+    setupSession(&s, FALSE); // every frame reaches capture/OCR gates
+    setRegion(&s, 0, 0.0, 0.5);
+    addSingleGroup(&s, OCR_EDGE_DISAPPEAR, "仓库", 2, 95);
+
+    static const struct Frame frames[] = {
+        {"仓库", 10, TRUE, FALSE}, // seed
+        {"",    0, FALSE, FALSE}, // pump 1: capture failed
+        {"",    0, TRUE,  TRUE},  // pump 2: black/blank frame
+        {"重连", 20, TRUE, FALSE}, // pump 3: OCR read fails
+        {"其他", 30, TRUE, FALSE}, // pump 4: read ok, no trigger yet
+    };
+    framesFor(0, frames, 5);
+
+    char err[MSG_BUFSIZE];
+    assert(ocrSessionSeed(&s, err));
+
+    // Event text aliases per-pump scratch (s->evText, reset every pump),
+    // so snapshot each tick's scan status/text before the next pump; only
+    // the static status strings and integer fields stay valid afterwards.
+    const char *scanStatus[4];
+    char scanText[4][OCR_EVENT_TEXT];
+    static const char *const want[4] = {
+        "capture_fail", "blank_frame", "read_fail", "ok"
+    };
+    for (int i = 0; i < 4; i++) {
+        OcrSessionEvent tick[16];
+        int got;
+        g_reg[0].failRead = (i == 2);
+        g_fakeNow = (UINT64)(1000 * (i + 1));
+        got = pumpOnce(&s, tick, 16);
+
+        int si = findEvent(tick, got, "scan");
+        assert(si >= 0);
+        assert(tick[si].regionIndex == 0);
+        assert(tick[si].groupIndex == -1);
+        scanStatus[i] = tick[si].status;
+        strncpy(scanText[i], tick[si].text ? tick[si].text : "",
+                OCR_EVENT_TEXT - 1);
+        scanText[i][OCR_EVENT_TEXT - 1] = '\0';
+    }
+    g_reg[0].failRead = FALSE;
+    for (int k = 0; k < 4; k++) {
+        assert(strcmp(scanStatus[k], want[k]) == 0);
+        if (k == 3) {
+            assert(strcmp(scanText[k], "其他") == 0);
+        } else {
+            // Failed scans carry no OCR text into the log/CSV.
+            assert(scanText[k][0] == '\0');
+        }
+    }
+
+    // A full event cap drops the scan silently instead of overflowing.
+    {
+        OcrSessionEvent none[1];
+        int n = 0;
+        assert(ocrSessionPump(&s, none, &n, 0));
+        assert(n == 0);
+    }
+
+    // Change detection ON: the same picture again logs "unchanged" and
+    // replays the cached text without running OCR.
+    {
+        OcrSession s2;
+        setupSession(&s2, TRUE);
+        setRegion(&s2, 0, 0.0, 0.5);
+        addSingleGroup(&s2, OCR_EDGE_DISAPPEAR, "仓库", 2, 95);
+        static const struct Frame same[] = {
+            {"仓库", 10, TRUE, FALSE},
+            {"仓库", 10, TRUE, FALSE},
+        };
+        framesFor(0, same, 2);
+        assert(ocrSessionSeed(&s2, err));
+        assert(g_reg[0].reads == 1);
+        OcrSessionEvent ev2[4];
+        g_fakeNow = 20000;
+        assert(pumpOnce(&s2, ev2, 4) == 1);
+        assert(strcmp(ev2[0].event, "scan") == 0);
+        assert(strcmp(ev2[0].status, "unchanged") == 0);
+        assert(ev2[0].text && strcmp(ev2[0].text, "仓库") == 0);
+        assert(g_reg[0].reads == 1);
+    }
+}
+
+// --- (m) scan rows in the CSV timeline: region identity, text, source, --
+//     outcome note; failed scans leave ocr_text empty.                   --
+
+static void test_scan_timeline_rows(void) {
+    OcrSession s;
+    setupSession(&s, FALSE);
+    setRegion(&s, 0, 0.0, 0.5);
+    addSingleGroup(&s, OCR_EDGE_APPEAR, "重连", 2, 50);
+
+    static const struct Frame frames[] = {
+        {"init", 10, TRUE, FALSE}, // seed: armed ABSENT
+        {"仓库", 20, TRUE, FALSE}, // pump 1: ok, absent stays steady
+        {"",    0, FALSE, FALSE}, // pump 2: capture failed
+    };
+    framesFor(0, frames, 3);
+
+    char path[1024], err[MSG_BUFSIZE];
+    s.timeline = ocrTimelineOpen("build/tests/tl-scan", path,
+                                 sizeof(path), err);
+    assert(s.timeline != NULL);
+    assert(ocrSessionSeed(&s, err));
+
+    OcrSessionEvent ev[8];
+    g_fakeNow = 1000;
+    assert(pumpOnce(&s, ev, 8) >= 1);
+    g_fakeNow = 2000;
+    assert(pumpOnce(&s, ev, 8) >= 1);
+    ocrTimelineClose(s.timeline);
+
+    FILE *f = fopen(path, "rb");
+    assert(f);
+    fseek(f, 0, SEEK_END);
+    long len = ftell(f);
+    rewind(f);
+    char *csv = malloc((size_t)len + 1);
+    assert(csv && fread(csv, 1, (size_t)len, f) == (size_t)len);
+    csv[len] = '\0';
+    fclose(f);
+    assert(strstr(csv, "scan,region 1,仓库,,,,region:1,ok") != NULL);
+    assert(strstr(csv, "scan,region 1,,,,,region:1,capture_fail") != NULL);
     free(csv);
 }
 
@@ -789,8 +1012,10 @@ static void test_worker_queue(void) {
     ocrWorkerDrain(collectSink);
     int trigger = countEvent(g_collected, g_collectedCount, "rule_trigger");
     int change = countEvent(g_collected, g_collectedCount, "loss_change");
+    int scans = countEvent(g_collected, g_collectedCount, "scan");
     assert(trigger == 1);
     assert(change == 1);
+    assert(scans >= 3); // one scan event per worker tick
     int found = 0;
     for (int i = 0; i < g_collectedCount; i++)
         if (strcmp(g_collected[i].event, "rule_trigger") == 0)
@@ -860,6 +1085,8 @@ int main(void) {
     test_union_capture_only_referenced();
     test_lenient_seed();
     test_csv_identity_and_escape();
+    test_scan_outcomes_and_cap();           // (l)
+    test_scan_timeline_rows();              // (m)
 
     printf("OK: ocr_session\n");
     return 0;

@@ -71,18 +71,24 @@ typedef struct {
     // destroyed/recycled HWND yields capture_unavailable, never OCR.
     BOOL (*targetAliveFn)(const CaptureWindow *target);
 
-    // Per-pump storage backing OcrSessionEvent.text (one slot per firing
-    // group; reset at the start of every pump).
-    char evText[OCR_MAX_GROUPS][OCR_EVENT_TEXT];
+    // Per-pump storage backing OcrSessionEvent.text: one slot per
+    // referenced region scan plus one per firing group (reset at the
+    // start of every pump).
+    char evText[OCR_MAX_REGIONS + OCR_MAX_GROUPS][OCR_EVENT_TEXT];
     int  evTextNext;
 } OcrSession;
 
 typedef struct {
-    int         groupIndex;
+    int         groupIndex;  // -1 for per-region scan events
+    int         regionIndex; // 0-based region for "scan", else -1
     int         lossPercent; // -1 when the event changes no gear
-    const char *event;       // static name: rule_trigger / loss_change /
-                             // capture_unavailable
-    const char *text;        // joined member text for rule_trigger, else NULL
+    const char *event;       // static name: scan / rule_trigger /
+                             // loss_change / capture_unavailable
+    const char *text;        // scan/recognized text, joined member text
+                             // for rule_trigger, "" for failed scans
+    const char *status;      // scan outcome (ok / unchanged /
+                             // capture_fail / blank_frame / read_fail),
+                             // NULL for group events
 } OcrSessionEvent;
 
 // Synchronous initial scan over the referenced union. Each group whose
@@ -94,9 +100,13 @@ BOOL ocrSessionSeed(OcrSession *s, char err[MSG_BUFSIZE]);
 
 // One scan of the referenced union plus one step per group. Events are
 // appended to ev starting at *evCount, capped at evCap; *evCount is
-// advanced. Every firing group emits rule_trigger; the first firing group
-// in table order additionally emits loss_change (its gear wins). Capture
-// failures become rate-limited per-group capture_unavailable events.
+// advanced. Every referenced region emits one "scan" event per pump
+// FIRST (status ok / unchanged / capture_fail / blank_frame /
+// read_fail), so the human log shows the recognition process even when
+// no rule fires. Every firing group then emits rule_trigger; the first
+// firing group in table order additionally emits loss_change (its gear
+// wins). Capture failures additionally become rate-limited per-group
+// capture_unavailable events.
 BOOL ocrSessionPump(OcrSession *s, OcrSessionEvent *ev, int *evCount,
                     int evCap);
 
