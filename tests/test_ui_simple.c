@@ -390,8 +390,9 @@ int main(void) {
             // (probed on IUP 3.30 Win64): NUMLIN_VISIBLE is clamped to
             // NUMLIN and reads -1 before map, so an empty table cannot
             // advertise visible rows through that attribute. The fixed
-            // height is pinned as a height-only RASTERSIZE "0xH"
-            // (17px header + 25px/row -> 4 rows 117px, 3 rows 92px).
+            // height is pinned as a height-only RASTERSIZE "0xH"; the
+            // pins measured on this build's 25px data rows plus the
+            // ~24px explicit title band (4-row window 134px, 3-row 109px).
             {
                 int pinH(const char *rs) {
                     const char *x = strchr(rs, 'x');
@@ -402,8 +403,8 @@ int main(void) {
                 assert(rm0 != NULL && gm0 != NULL);
                 assert(IupGetInt(rm0, "NUMLIN") == 0);
                 assert(IupGetInt(gm0, "NUMLIN") == 0);
-                assert(pinH(IupGetAttribute(rm0, "RASTERSIZE")) == 117);
-                assert(pinH(IupGetAttribute(gm0, "RASTERSIZE")) == 92);
+                assert(pinH(IupGetAttribute(rm0, "RASTERSIZE")) == 134);
+                assert(pinH(IupGetAttribute(gm0, "RASTERSIZE")) == 109);
             }
 
             // The region and group tables sit side by side (hbox): the
@@ -1204,8 +1205,63 @@ int main(void) {
                                          "RASTERSIZE");
                     gh = IupGetAttribute(uiOcrGroupsMatrixForTest(),
                                          "RASTERSIZE");
-                    assert(atoi(strchr(rh, 'x') + 1) == 117);
-                    assert(atoi(strchr(gh, 'x') + 1) == 92);
+                    assert(atoi(strchr(rh, 'x') + 1) == 134);
+                    assert(atoi(strchr(gh, 'x') + 1) == 109);
+                }
+                // Column geometry on the live tables (user report:
+                // "选择后，显示不全" -- picked rows painted as blank
+                // strips). Three pinned root causes:
+                //  1) IUP 3.30 RASTERWIDTH aliases/rewrites the caller's
+                //     string buffer in place: a per-call stack buffer made
+                //     every column share one pointer, which read 0 after
+                //     return -> all configured columns collapsed at map.
+                //  2) NUMCOL counts DATA columns (title band is col 0);
+                //     NUMCOL=4 with callbacks filling cols 0..3 left a
+                //     phantom blank 120px data column stealing the width.
+                //  3) The title row (lin 0) defaults to RASTERHEIGHT 0
+                //     on this build, so the column labels never painted
+                //     until an explicit header height was set.
+                {
+                    Ihandle *rmL = uiOcrRegionsMatrixForTest();
+                    Ihandle *gmL = uiOcrGroupsMatrixForTest();
+                    int rc;
+                    assert(IupGetInt(rmL, "NUMCOL") == 3);
+                    assert(IupGetInt(gmL, "NUMCOL") == 5);
+                    for (rc = 0; rc <= 3; rc++)
+                        assert(IupGetIntId(rmL, "RASTERWIDTH", rc) > 0);
+                    for (rc = 0; rc <= 5; rc++)
+                        assert(IupGetIntId(gmL, "RASTERWIDTH", rc) > 0);
+                    // English trigger text "When text disappears" must
+                    // fit its column (visual harness: 104px clipped it);
+                    // the width is redistributed from the summary column,
+                    // so the six group columns keep their 524px total and
+                    // the auto-fit dialog does not grow.
+                    assert(IupGetIntId(gmL, "RASTERWIDTH", 2) == 150);
+                    {
+                        int gw = 0, gi;
+                        for (gi = 0; gi <= 5; gi++)
+                            gw += IupGetIntId(gmL, "RASTERWIDTH", gi);
+                        assert(gw == 524);
+                    }
+                    // The position column (200px) must stay the widest
+                    // region column; neither table may expose a phantom
+                    // column beyond its last data column.
+                    assert(IupGetIntId(rmL, "RASTERWIDTH", 2)
+                           > IupGetIntId(rmL, "RASTERWIDTH", 1));
+                    assert(IupGetAttributeId(rmL, "RASTERWIDTH", 4)
+                           == NULL);
+                    assert(IupGetAttributeId(gmL, "RASTERWIDTH", 6)
+                           == NULL);
+                    // Same geometry contract for rows: the title row
+                    // (lin 0) defaults to height 0 in this IUP build, so
+                    // without an explicit height the column labels never
+                    // paint. The stored 17 is IUP's character-unit value
+                    // (paints ~24-25px with the default font, pixel-
+                    // measured in the visual harness); data rows inherit
+                    // the same default without an explicit set.
+                    assert(IupGetIntId(rmL, "RASTERHEIGHT", 0) == 17);
+                    assert(IupGetIntId(rmL, "RASTERHEIGHT", 1) == 17);
+                    assert(IupGetIntId(gmL, "RASTERHEIGHT", 0) == 17);
                 }
                 IupDestroy(dlg); // owns box
             }

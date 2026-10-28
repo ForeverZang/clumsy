@@ -26,16 +26,28 @@
 #define GROUP_LINES_VISIBLE  3
 
 // IupMatrix fixed-height geometry, measured on the Win64 IUP 3.30 build
-// with the default font (96 DPI): a 17px column-header bar plus 25px per
-// data row. NUMLIN_VISIBLE is clamped to NUMLIN and reads -1 before map,
-// so an empty table cannot advertise its visible rows through that
+// with the default font (96 DPI). Data rows keep IUP's built-in default
+// RASTERHEIGHT of 17 character units (paints 25px); the title band
+// (lin 0) defaults to height 0 on this build and is set explicitly in
+// newMatrix. NUMLIN_VISIBLE is clamped to NUMLIN and reads -1 before
+// map, so an empty table cannot advertise its visible rows through that
 // attribute; the fixed visual height is pinned instead with a
 // height-only RASTERSIZE ("0xH" -- width 0 leaves horizontal EXPAND to
-// the container). The pin survives later NUMLIN updates.
-#define MATRIX_HEADER_PX 17
-#define MATRIX_ROW_PX    25
-#define matrixPinHeight(visibleLines) \
-    (MATRIX_HEADER_PX + MATRIX_ROW_PX * (visibleLines))
+// the container). The RASTERHEIGHT value 17 is IUP's character-unit
+// number: with the default font the title band paints ~24px and a data
+// row 25px (pixel-measured in the scratch visual harness). The pins are
+// exactly a title band, N data rows and a ~10px peek strip --
+// 134 = 24 + 4*25 + 10, 109 = 24 + 3*25 + 10 -- so the table hints at
+// more rows without changing size as NUMLIN grows; at 134px and 5 rows
+// NUMLIN_VISIBLE reads 4 (probe-verified).
+#define MATRIX_TITLE_HEIGHT_CHARS 17
+#define REGION_MATRIX_PIN_PX     134
+#define GROUP_MATRIX_PIN_PX      109
+// Geometry strings handed to RASTERWIDTH/RASTERHEIGHT: this IUP build
+// stores the caller's pointer and rewrites it in place (pixels -> char
+// units), so every column/row needs its own permanent buffer. 16 bytes
+// fits any int via %d plus the rewritten char-unit form.
+#define MATRIX_GEOM_BUF 16
 
 #define COL_RNUM   0
 #define COL_DELETE_REGION 3
@@ -58,6 +70,7 @@ static size_t       g_groupCount = 0;
 static NormRect     g_rectMirror[OCR_MAX_REGIONS];
 
 static Ihandle *g_regionMatrix, *g_groupMatrix;
+
 // hbox root holding the two frames side by side (test seam + layout owner)
 static Ihandle *g_root;
 static Ihandle *g_regionBtn, *g_newGroupBtn;
@@ -486,15 +499,16 @@ static int groupDblClickCb(Ihandle *ih, int lin, int col) {
 // construction
 // ---------------------------------------------------------------------------
 
-static Ihandle *newMatrix(int numCol, int visibleLines,
+static Ihandle *newMatrix(int numCol, int visibleLines, int pinPx,
                           Icallback valueCb, Icallback readonlyCb,
                           Icallback clickCb, Icallback dblClickCb,
                           Icallback enterCb, Icallback fgCb,
                           Icallback changedCb, const int *widths) {
     Ihandle *m = IupMatrix(NULL);
-    char wbuf[16];
     char pin[24];
     int c;
+    // numCol counts DATA columns; column 0 is the gray title band, so
+    // the widget owns numCol + 1 columns overall.
     IupSetInt(m, "NUMCOL", numCol);
     IupSetInt(m, "NUMLIN", 0);
     IupSetInt(m, "NUMLIN_VISIBLE", visibleLines);
@@ -504,11 +518,35 @@ static Ihandle *newMatrix(int numCol, int visibleLines,
     // model later holds; "0" width keeps the widget EXPAND-ing with its
     // frame. Once mapped and NUMLIN >= visibleLines, NUMLIN_VISIBLE
     // recomputes to the requested window over the pinned height.
-    snprintf(pin, sizeof(pin), "0x%d", matrixPinHeight(visibleLines));
+    snprintf(pin, sizeof(pin), "0x%d", pinPx);
     IupSetAttribute(m, "RASTERSIZE", pin);
-    for (c = 0; c < numCol; c++) {
-        snprintf(wbuf, sizeof(wbuf), "%d", widths[c]);
-        IupSetAttributeId(m, "RASTERWIDTH", c, wbuf);
+    // Quirk of this IUP 3.30 Win64 build (probe-verified): the
+    // RASTERWIDTH attribute handler stores the caller's string pointer
+    // without copying it and rewrites it in place with its pixel->char
+    // conversion. Reusing one stack buffer makes every column alias the
+    // same pointer, so once newMatrix returns all columns read width 0
+    // and paint as blank strips. Give every column its own permanent
+    // buffer; the two matrices are process-lifetime singletons, so the
+    // small allocations are intentionally never freed.
+    for (c = 0; c <= numCol; c++) {
+        char *wstore = (char *)malloc(MATRIX_GEOM_BUF);
+        // Out of memory here only degrades column proportions: the
+        // unset column keeps IUP's 120px default instead of going blank.
+        if (wstore == NULL) continue;
+        snprintf(wstore, MATRIX_GEOM_BUF, "%d", widths[c]);
+        IupSetAttributeId(m, "RASTERWIDTH", c, wstore);
+    }
+    {
+        // Title row (lin 0) height defaults to 0 on this build, same as
+        // the title column's default width: the column labels would not
+        // paint without an explicit value. Persistent buffer for the
+        // same no-copy/rewrite reason as RASTERWIDTH above.
+        char *hstore = (char *)malloc(MATRIX_GEOM_BUF);
+        if (hstore != NULL) {
+            snprintf(hstore, MATRIX_GEOM_BUF, "%d",
+                     MATRIX_TITLE_HEIGHT_CHARS);
+            IupSetAttributeId(m, "RASTERHEIGHT", 0, hstore);
+        }
     }
     IupSetCallback(m, "VALUE_CB", valueCb);
     IupSetCallback(m, "READONLY_CB", readonlyCb);
@@ -521,15 +559,23 @@ static Ihandle *newMatrix(int numCol, int visibleLines,
 }
 
 Ihandle *uiOcrGroupsCreate(void) {
+    // Index 0 is the title band; the rest are the data columns, in the
+    // same order as the COL_* constants and the VALUE_CB switch.
     static const int regionWidths[4] = { 34, 110, 200, 48 };
-    static const int groupWidths[6] = { 46, 238, 104, 40, 48, 48 };
+    // Trigger column needs 150px for the English edge text
+    // ("When text disappears"); the width comes out of the summary
+    // column, so the six-column total (524px) and the auto-fit dialog
+    // width are unchanged.
+    static const int groupWidths[6] = { 46, 192, 150, 40, 48, 48 };
     Ihandle *regionFrame, *groupFrame, *root, *regionBtnRow, *groupBtnRow;
 
-    g_regionMatrix = newMatrix(4, REGION_LINES_VISIBLE,
+    g_regionMatrix = newMatrix(3, REGION_LINES_VISIBLE,
+        REGION_MATRIX_PIN_PX,
         (Icallback)regionValueCb, (Icallback)regionReadonlyCb,
         (Icallback)regionClickCb, NULL, NULL, NULL,
         (Icallback)regionChangedCb, regionWidths);
-    g_groupMatrix = newMatrix(6, GROUP_LINES_VISIBLE,
+    g_groupMatrix = newMatrix(5, GROUP_LINES_VISIBLE,
+        GROUP_MATRIX_PIN_PX,
         (Icallback)groupValueCb, (Icallback)groupReadonlyCb,
         (Icallback)groupClickCb, (Icallback)groupDblClickCb,
         (Icallback)groupDblClickCb, (Icallback)groupFgCb, NULL,
