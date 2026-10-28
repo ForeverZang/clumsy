@@ -15,7 +15,7 @@
 
 #define OCR_LOG_MAX_LINES 500
 
-static Ihandle *g_log, *g_csvLabel;
+static Ihandle *g_log, *g_csvLabel, *g_openDirBtn;
 static char g_csvPath[512] = "";
 static char *g_logText = NULL;
 
@@ -76,7 +76,7 @@ void uiOcrSetCsvPath(const char *path) {
 }
 
 Ihandle *uiOcrLogBuild(void) {
-    Ihandle *csvLbl, *csvRow, *openDirBtn, *box;
+    Ihandle *csvLbl, *csvRow, *box;
 
     g_log = IupMultiLine(NULL);
     IupSetAttribute(g_log, "READONLY", "YES");
@@ -90,10 +90,10 @@ Ihandle *uiOcrLogBuild(void) {
     IupSetAttribute(g_csvLabel, "FGCOLOR", "110 110 110");
     IupSetAttribute(g_csvLabel, "EXPAND", "HORIZONTAL");
     IupSetAttribute(g_csvLabel, "WRAP", "YES");
-    openDirBtn = IupFlatButton(tr("ocr.openDir"));
-    i18nBind(openDirBtn, "TITLE", "ocr.openDir");
-    IupSetCallback(openDirBtn, "FLAT_ACTION", (Icallback)openDirCb);
-    csvRow = IupHbox(csvLbl, g_csvLabel, openDirBtn, NULL);
+    g_openDirBtn = IupFlatButton(tr("ocr.openDir"));
+    i18nBind(g_openDirBtn, "TITLE", "ocr.openDir");
+    IupSetCallback(g_openDirBtn, "FLAT_ACTION", (Icallback)openDirCb);
+    csvRow = IupHbox(csvLbl, g_csvLabel, g_openDirBtn, NULL);
 
     box = IupVbox(g_log, csvRow, NULL);
     return box;
@@ -101,6 +101,10 @@ Ihandle *uiOcrLogBuild(void) {
 
 Ihandle *uiOcrLogForTest(void) {
     return g_log;
+}
+
+Ihandle *uiOcrLogOpenDirButtonForTest(void) {
+    return g_openDirBtn;
 }
 
 #else // !CLUMSY_OCR — no-op stubs for builds without OCR
@@ -111,5 +115,6 @@ Ihandle *uiOcrLogBuild(void) { return NULL; }
 void uiOcrAppendLog(const char *line) { (void)line; }
 void uiOcrSetCsvPath(const char *path) { (void)path; }
 Ihandle *uiOcrLogForTest(void) { return NULL; }
+Ihandle *uiOcrLogOpenDirButtonForTest(void) { return NULL; }
 
 #endif // CLUMSY_OCR

@@ -26,4 +26,7 @@ void uiOcrSetCsvPath(const char *path);
 // Test seam: the read-only multiline holding the log text.
 Ihandle *uiOcrLogForTest(void);
 
+// Test seam: the "open folder" flat button next to the CSV path.
+Ihandle *uiOcrLogOpenDirButtonForTest(void);
+
 #endif // CLUMSY_UI_OCR_LOG_H

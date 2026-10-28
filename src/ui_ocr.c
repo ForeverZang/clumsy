@@ -22,6 +22,10 @@ static OcrLayoutChangedFn g_layoutChanged = NULL;
 static BOOL g_uiMapped = FALSE;
 
 static Ihandle *g_frame, *g_enableToggle, *g_body, *g_gateError;
+// Freezable configuration subtree; the log area is a sibling of this
+// container inside g_body so running greys config widgets but never the
+// log (a disabled IUP container greys and deactivates ALL descendants).
+static Ihandle *g_configBody;
 static Ihandle *g_windowLabel, *g_chooseBtn, *g_addBtn;
 static Ihandle *g_interval, *g_changeToggle;
 static Ihandle *g_errorLabel;
@@ -378,9 +382,12 @@ void uiOcrSetRunning(BOOL running) {
     g_running = running;
     // Running freezes the section's configuration widgets only; the
     // single Start/Stop surface is the green/red bar in the main area,
-    // whose label main.c owns ("开始影响 / 停止影响").
+    // whose label main.c owns ("开始影响 / 停止影响"). The log area is
+    // deliberately OUTSIDE g_configBody: it must stay readable,
+    // scrollable and live-painting while running, otherwise runtime
+    // "丢包率切换为 N%" lines only surface after Stop.
     IupSetAttribute(g_enableToggle, "ACTIVE", running ? "NO" : "YES");
-    IupSetAttribute(g_body, "ACTIVE", running ? "NO" : "YES");
+    IupSetAttribute(g_configBody, "ACTIVE", running ? "NO" : "YES");
     // While running the tables and both picker buttons freeze; on stop
     // they return to their gate-derived states.
     uiOcrGroupsSetRunning(running);
@@ -486,8 +493,13 @@ Ihandle *uiOcrCreate(void) {
     // No in-block Start: the bottom green/red bar ("开始影响 /
     // 停止影响") is the sole Start/Stop surface and its label never
     // changes semantics.
-    g_body = IupVbox(windowRow, groupsRoot, paramsRow,
-                     logArea, g_errorLabel, NULL);
+    //
+    // The log area stays OUTSIDE g_configBody: SetRunning flips ACTIVE
+    // on the config subtree alone, so the OCR log (and its open-dir
+    // button) keep painting loss-switch lines while a session runs.
+    g_configBody = IupVbox(windowRow, groupsRoot, paramsRow, NULL);
+    IupSetAttribute(g_configBody, "GAP", "6");
+    g_body = IupVbox(g_configBody, logArea, g_errorLabel, NULL);
     IupSetAttribute(g_body, "VISIBLE", "NO");
     IupSetAttribute(g_body, "FLOATING", "YES");
     IupSetAttribute(g_body, "GAP", "6");
@@ -527,6 +539,8 @@ Ihandle *uiOcrEnableToggleForTest(void) { return g_enableToggle; }
 Ihandle *uiOcrChooseButtonForTest(void) { return g_chooseBtn; }
 Ihandle *uiOcrAddButtonForTest(void) { return g_addBtn; }
 Ihandle *uiOcrBodyForTest(void) { return g_body; }
+Ihandle *uiOcrIntervalTextForTest(void) { return g_interval; }
+Ihandle *uiOcrChangeToggleForTest(void) { return g_changeToggle; }
 Ihandle *uiOcrGateErrorForTest(void) { return g_gateError; }
 Ihandle *uiOcrErrorLabelForTest(void) { return g_errorLabel; }
 
@@ -558,6 +572,8 @@ Ihandle *uiOcrEnableToggleForTest(void) { return NULL; }
 Ihandle *uiOcrChooseButtonForTest(void) { return NULL; }
 Ihandle *uiOcrAddButtonForTest(void) { return NULL; }
 Ihandle *uiOcrBodyForTest(void) { return NULL; }
+Ihandle *uiOcrIntervalTextForTest(void) { return NULL; }
+Ihandle *uiOcrChangeToggleForTest(void) { return NULL; }
 Ihandle *uiOcrGateErrorForTest(void) { return NULL; }
 Ihandle *uiOcrErrorLabelForTest(void) { return NULL; }
 void uiOcrSetMappedForTest(BOOL mapped) { (void)mapped; }

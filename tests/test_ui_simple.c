@@ -817,11 +817,32 @@ int main(void) {
                 assert(IupGetInt(gmT, "ACTIVE") == 0);
                 assert(IupGetInt(addBtn, "ACTIVE") == 0);
                 assert(IupGetInt(newBtn, "ACTIVE") == 0);
+                // The params row has no ACTIVE writes of its own: it
+                // freezes purely via g_configBody inheritance.
+                assert(IupGetInt(uiOcrIntervalTextForTest(),
+                                 "ACTIVE") == 0);
+                assert(IupGetInt(uiOcrChangeToggleForTest(),
+                                 "ACTIVE") == 0);
+                // The log stays live while running so runtime
+                // loss-switch lines paint immediately and the box
+                // stays scrollable/copyable; it sits outside the
+                // frozen config container, together with its
+                // open-folder button.
+                assert(IupGetInt(uiOcrLogForTest(), "ACTIVE") != 0);
+                assert(IupGetInt(uiOcrLogOpenDirButtonForTest(),
+                                 "ACTIVE") != 0);
                 uiOcrSetRunning(FALSE);
                 assert(IupGetInt(rmT, "ACTIVE") != 0);
                 assert(IupGetInt(gmT, "ACTIVE") != 0);
                 assert(IupGetInt(addBtn, "ACTIVE") == addWas);
                 assert(IupGetInt(newBtn, "ACTIVE") == newWas);
+                assert(IupGetInt(uiOcrIntervalTextForTest(),
+                                 "ACTIVE") != 0);
+                assert(IupGetInt(uiOcrChangeToggleForTest(),
+                                 "ACTIVE") != 0);
+                assert(IupGetInt(uiOcrLogForTest(), "ACTIVE") != 0);
+                assert(IupGetInt(uiOcrLogOpenDirButtonForTest(),
+                                 "ACTIVE") != 0);
             }
 
             // Log mirror: the FIRST append grows the buffer from NULL;

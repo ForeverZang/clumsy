@@ -82,6 +82,10 @@ Ihandle *uiOcrEnableToggleForTest(void);
 Ihandle *uiOcrChooseButtonForTest(void);
 Ihandle *uiOcrAddButtonForTest(void);
 Ihandle *uiOcrBodyForTest(void);
+// Test seams: params-row widgets (interval text, change-detect toggle),
+// which freeze purely through config-container inheritance while running.
+Ihandle *uiOcrIntervalTextForTest(void);
+Ihandle *uiOcrChangeToggleForTest(void);
 // Test seam: always-visible (even when the body is folded) red label that
 // explains an enable-gate refusal such as "pick a concrete application".
 Ihandle *uiOcrGateErrorForTest(void);
