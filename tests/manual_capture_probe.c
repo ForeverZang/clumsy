@@ -43,7 +43,7 @@ int main(int argc, char **argv) {
         unsigned char *bgra = NULL;
         int w = 0, h = 0;
         char err[512];
-        BOOL ok = captureClientRegion(hwnd, NULL, &bgra, &w, &h, err);
+        BOOL ok = captureClientRegion(hwnd, 0, NULL, &bgra, &w, &h, err);
         if (!ok) {
             printf("[%4.1fs] capture fail: %s\n", tick * 0.5, err);
         } else {

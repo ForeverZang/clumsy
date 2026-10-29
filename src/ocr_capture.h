@@ -62,10 +62,20 @@ BOOL captureFrameBlank(const unsigned char *bgra, int w, int h);
 // PrintWindow(PW_CLIENTONLY|PW_RENDERFULLCONTENT) of hwnd's client area
 // (or the sub rectangle when non-NULL). On success *outBgra is a malloc'd
 // top-down BGRA buffer released with captureFreeBitmap.
-BOOL captureClientRegion(HWND hwnd, const RECT *sub,
+//
+// expectedPid pins the window owner: on the capture thread, immediately
+// before PrintWindow, hwnd's live owner PID is re-checked and the capture
+// fails closed on mismatch (a dead HWND whose handle recycled onto another
+// process). Pass 0 only from callers that genuinely do not pin an owner.
+BOOL captureClientRegion(HWND hwnd, DWORD expectedPid, const RECT *sub,
                          unsigned char **outBgra, int *outW, int *outH,
                          char err[MSG_BUFSIZE]);
 void captureFreeBitmap(unsigned char *bgra);
+
+// Test seam: override the bounded PrintWindow deadline in milliseconds so
+// boundary behavior is deterministic instead of racing the scheduler.
+// Pass 0 to restore the production default. Not called by product code.
+void captureSetPrintTimeoutForTest(DWORD ms);
 
 // Window still exists, is visible and not minimized.
 BOOL captureIsCapturable(HWND hwnd);

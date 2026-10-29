@@ -60,8 +60,9 @@ typedef struct {
     BOOL   referenced[OCR_MAX_REGIONS]; // union captured each tick
 
     // Injected points (tests pass fakes; production passes real ones).
-    BOOL (*captureFn)(HWND, const RECT *, unsigned char **, int *, int *,
-                      char[MSG_BUFSIZE]);
+    // The DWORD is the pinned owner PID re-checked right before capture.
+    BOOL (*captureFn)(HWND, DWORD, const RECT *, unsigned char **, int *,
+                      int *, char[MSG_BUFSIZE]);
     BOOL (*readFn)(OcrEngine *, const unsigned char *, int, int, char *,
                    size_t, char[MSG_BUFSIZE]);
     OcrEngine *engine;

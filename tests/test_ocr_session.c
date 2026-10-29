@@ -50,9 +50,10 @@ static BOOL fakeTargetAlive(const CaptureWindow *target) {
     return g_targetAlive;
 }
 
-static BOOL fakeCapture(HWND hwnd, const RECT *rc, unsigned char **outBgra,
-                        int *outW, int *outH, char err[MSG_BUFSIZE]) {
-    (void)hwnd; (void)err;
+static BOOL fakeCapture(HWND hwnd, DWORD expectedPid, const RECT *rc,
+                        unsigned char **outBgra, int *outW, int *outH,
+                        char err[MSG_BUFSIZE]) {
+    (void)hwnd; (void)expectedPid; (void)err;
     // Session maps each region's norm onto a 1000x1000 fallback client
     // (real GetClientRect only fails on the fake sentinel HWNDs). The
     // three fixture regions start at left = 0 / 500 / 670.

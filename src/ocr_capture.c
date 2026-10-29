@@ -268,13 +268,132 @@ void captureFreeBitmap(unsigned char *bgra) {
     free(bgra);
 }
 
-BOOL captureClientRegion(HWND hwnd, const RECT *sub,
+// --- bounded PrintWindow -------------------------------------------------
+// PrintWindow cross-thread-sends into the target's UI thread. If clumsy's
+// own impairment (or anything else) stops that thread pumping messages, a
+// direct PrintWindow blocks forever. That froze the OCR worker, and the GUI
+// thread's Stop then joined it with INFINITE, so uiOcrSetRunning(FALSE) was
+// never reached and the config widgets stayed disabled.
+//
+// PrintWindow therefore runs on a short-lived helper thread, and the helper
+// is the SINGLE OWNER of every job resource (DC, DIB, both events, the job
+// struct, the pending counter) for the thread's whole lifetime:
+//
+//   helper:  PrintWindow -> record result -> SetEvent(done)
+//            -> WaitForSingleObject(release) -> destroy GDI
+//            -> close events -> free(job) -> decrement -> exit
+//
+//   caller:  wait done bounded; on success crop the DIB while the helper is
+//            parked, then SetEvent(release) and join; on timeout SetEvent
+//            (release) and detach without touching the GDI objects or
+//            events (a manual-reset release signaled before the helper
+//            reaches its wait is not lost, so cleanup still runs once the
+//            blocked PrintWindow returns).
+//
+// There is deliberately no ownership transfer and no branch in the helper,
+// so a timeout that lands on the wait boundary can neither double-free nor
+// strand the GDI objects. A small cap on still-pending captures makes
+// repeated ticks fail fast instead of stacking threads against a dead
+// target; the slot is handed back only when the abandoned call actually
+// returns. The cap is therefore global, not per session: a target whose UI
+// thread deadlocks forever (it never pumps again and the process never
+// exits) keeps holding up to CAPTURE_MAX_PENDING slots until clumsy
+// restarts. That is the deliberate bound -- two parked threads and two
+// DIBs, never an unbounded stack -- and the motivating failure (clumsy's
+// own impairment stopped the pump) self-heals the moment loss is removed,
+// as test 29 pins. Abandoned helpers are never joined (not even at exit):
+// process teardown reclaims them.
+
+#define CAPTURE_PRINT_TIMEOUT_MS 1000u
+#define CAPTURE_MAX_PENDING      2
+
+static volatile LONG g_pendingCaptures;
+static volatile LONG g_printTimeoutMs = (LONG)CAPTURE_PRINT_TIMEOUT_MS;
+
+static DWORD capturePrintTimeoutMs(void) {
+    LONG v = g_printTimeoutMs;
+    return v > 0 ? (DWORD)v : CAPTURE_PRINT_TIMEOUT_MS;
+}
+
+void captureSetPrintTimeoutForTest(DWORD ms) {
+    InterlockedExchange(&g_printTimeoutMs,
+                        ms > 0 ? (LONG)ms : (LONG)CAPTURE_PRINT_TIMEOUT_MS);
+}
+
+struct printJob {
+    HWND    hwnd;
+    DWORD   expectedPid;  // pinned owner; 0 = caller opted out
+    HDC     screen;
+    HDC     mem;
+    HGDIOBJ oldBmp;
+    HBITMAP dib;
+    HANDLE  done;     // manual-reset: helper has finished the capture call
+    HANDLE  release;  // manual-reset: caller is done reading the DIB
+    BOOL    result;
+    DWORD   lastError;
+    BOOL    ownerMismatch; // hwnd's live PID was not expectedPid
+};
+
+static void destroyCaptureGdi(HDC screen, HDC mem, HGDIOBJ oldBmp,
+                              HBITMAP dib) {
+    SelectObject(mem, oldBmp);
+    DeleteObject(dib);
+    DeleteDC(mem);
+    ReleaseDC(NULL, screen);
+}
+
+static DWORD WINAPI printWindowThread(LPVOID arg) {
+    struct printJob *job = (struct printJob *)arg;
+    // Defense-in-depth owner re-check on THIS thread, immediately before
+    // the cross-thread send: the per-tick gate ran on the worker a moment
+    // ago, and a pinned window can die and have its HWND recycled onto
+    // another process in between. Not atomic with the kernel send inside
+    // PrintWindow -- no userspace check can be -- but it closes the
+    // practical window and is fail-closed.
+    DWORD livePid = 0;
+    GetWindowThreadProcessId(job->hwnd, &livePid);
+    if (job->expectedPid != 0 && livePid != job->expectedPid) {
+        job->ownerMismatch = TRUE;
+        job->result = FALSE;
+        job->lastError = ERROR_INVALID_WINDOW_HANDLE;
+    } else {
+        job->result = PrintWindow(job->hwnd, job->mem,
+                                  PW_CLIENTONLY | PW_RENDERFULLCONTENT);
+        job->lastError = GetLastError();
+    }
+    SetEvent(job->done);
+    // Stay parked until the caller has finished reading (or has timed out
+    // and signaled release before this wait); only then free the DIB.
+    WaitForSingleObject(job->release, INFINITE);
+    destroyCaptureGdi(job->screen, job->mem, job->oldBmp, job->dib);
+    CloseHandle(job->done);
+    CloseHandle(job->release);
+    free(job);
+    InterlockedDecrement(&g_pendingCaptures);
+    return 0;
+}
+
+// Cleanup for the window where the helper thread never started: the GDI
+// objects and job resources are still ours and the pending slot is held.
+static void releaseUnstartedJob(struct printJob *job, HDC screen, HDC mem,
+                                HGDIOBJ oldBmp, HBITMAP dib) {
+    if (job) {
+        if (job->done) CloseHandle(job->done);
+        if (job->release) CloseHandle(job->release);
+        free(job);
+    }
+    destroyCaptureGdi(screen, mem, oldBmp, dib);
+    InterlockedDecrement(&g_pendingCaptures);
+}
+
+BOOL captureClientRegion(HWND hwnd, DWORD expectedPid, const RECT *sub,
                          unsigned char **outBgra, int *outW, int *outH,
                          char err[MSG_BUFSIZE]) {
     if (!hwnd || !outBgra || !outW || !outH) return FALSE;
     *outBgra = NULL;
     *outW = 0;
     *outH = 0;
+    if (err) err[0] = '\0';
 
     RECT client;
     if (!GetClientRect(hwnd, &client)) {
@@ -290,8 +409,31 @@ BOOL captureClientRegion(HWND hwnd, const RECT *sub,
         return FALSE;
     }
 
+    // Reserve the pending slot atomically before allocating anything, so
+    // ticks against a dead target fail fast without racing the cap.
+    LONG pending = InterlockedIncrement(&g_pendingCaptures);
+    if (pending > CAPTURE_MAX_PENDING) {
+        InterlockedDecrement(&g_pendingCaptures);
+        if (err) {
+            strncpy(err,
+                    "target window is not responding; capture skipped "
+                    "(captures still pending)",
+                    MSG_BUFSIZE - 1);
+            err[MSG_BUFSIZE - 1] = '\0';
+        }
+        return FALSE;
+    }
+
     HDC screen = GetDC(NULL);
     HDC mem = CreateCompatibleDC(screen);
+    if (!screen || !mem) {
+        if (mem) DeleteDC(mem);
+        if (screen) ReleaseDC(NULL, screen);
+        InterlockedDecrement(&g_pendingCaptures);
+        if (err) strncpy(err, "could not create capture DC",
+                         MSG_BUFSIZE - 1);
+        return FALSE;
+    }
 
     BITMAPINFO bi;
     memset(&bi, 0, sizeof(bi));
@@ -305,24 +447,95 @@ BOOL captureClientRegion(HWND hwnd, const RECT *sub,
     unsigned char *fullBits = NULL;
     HBITMAP dib = CreateDIBSection(screen, &bi, DIB_RGB_COLORS,
                                    (void **)&fullBits, NULL, 0);
-    HGDIOBJ oldBmp = SelectObject(mem, dib);
-
-    BOOL pw = PrintWindow(hwnd, mem,
-                          PW_CLIENTONLY | PW_RENDERFULLCONTENT);
-    SelectObject(mem, oldBmp);
-
-    if (!pw) {
-        DeleteObject(dib);
+    if (!dib || !fullBits) {
+        if (dib) DeleteObject(dib);
         DeleteDC(mem);
         ReleaseDC(NULL, screen);
+        InterlockedDecrement(&g_pendingCaptures);
+        if (err) strncpy(err, "could not create capture bitmap",
+                         MSG_BUFSIZE - 1);
+        return FALSE;
+    }
+    HGDIOBJ oldBmp = SelectObject(mem, dib);
+
+    struct printJob *job = (struct printJob *)calloc(1, sizeof(*job));
+    if (!job) {
+        releaseUnstartedJob(NULL, screen, mem, oldBmp, dib);
+        if (err) strncpy(err, "out of memory", MSG_BUFSIZE - 1);
+        return FALSE;
+    }
+    job->hwnd = hwnd;
+    job->expectedPid = expectedPid;
+    job->screen = screen;
+    job->mem = mem;
+    job->oldBmp = oldBmp;
+    job->dib = dib;
+    job->done = CreateEventW(NULL, TRUE, FALSE, NULL);
+    job->release = CreateEventW(NULL, TRUE, FALSE, NULL);
+    if (!job->done || !job->release) {
+        releaseUnstartedJob(job, screen, mem, oldBmp, dib);
+        if (err) strncpy(err, "could not create capture events",
+                         MSG_BUFSIZE - 1);
+        return FALSE;
+    }
+
+    HANDLE thread = CreateThread(NULL, 0, printWindowThread, job, 0, NULL);
+    if (!thread) {
+        DWORD gle = GetLastError();
+        releaseUnstartedJob(job, screen, mem, oldBmp, dib);
         if (err) {
             snprintf(err, MSG_BUFSIZE,
-                     "PrintWindow failed (win32 error %lu)",
-                     GetLastError());
+                     "could not start capture thread (win32 error %lu)",
+                     (unsigned long)gle);
+        }
+        return FALSE;
+    }
+    // From here on the helper owns the GDI objects, both events, the job
+    // struct and the pending slot in every path. We only keep the thread
+    // handle and our read-only view of fullBits while the helper is parked.
+
+    DWORD timeoutMs = capturePrintTimeoutMs();
+    DWORD wr = WaitForSingleObject(job->done, timeoutMs);
+    if (wr != WAIT_OBJECT_0) {
+        // Detach: never touch GDI/events/job, never join. The helper is
+        // still inside PrintWindow; release is already signaled, so it frees
+        // everything and returns the slot the moment the call comes back.
+        SetEvent(job->release);
+        CloseHandle(thread);
+        if (err) {
+            snprintf(err, MSG_BUFSIZE,
+                     "target window is not responding; capture timed out "
+                     "after %lu ms",
+                     (unsigned long)timeoutMs);
         }
         return FALSE;
     }
 
+    BOOL pw = job->result;
+    BOOL ownerMismatch = job->ownerMismatch;
+    DWORD gle = job->lastError;
+    if (!pw) {
+        if (err) {
+            if (ownerMismatch) {
+                strncpy(err,
+                        "target window no longer belongs to the pinned "
+                        "application; capture skipped",
+                        MSG_BUFSIZE - 1);
+                err[MSG_BUFSIZE - 1] = '\0';
+            } else {
+                snprintf(err, MSG_BUFSIZE,
+                         "PrintWindow failed (win32 error %lu)",
+                         (unsigned long)gle);
+            }
+        }
+        SetEvent(job->release);
+        WaitForSingleObject(thread, INFINITE);
+        CloseHandle(thread);
+        return FALSE;
+    }
+
+    // PrintWindow has returned and the helper is parked: the DIB is stable
+    // to read but must not be deleted until we signal release.
     RECT rc = sub ? *sub : client;
     if (rc.left < 0) rc.left = 0;
     if (rc.top < 0) rc.top = 0;
@@ -331,9 +544,9 @@ BOOL captureClientRegion(HWND hwnd, const RECT *sub,
     int w = rc.right - rc.left;
     int h = rc.bottom - rc.top;
     if (w <= 0 || h <= 0) {
-        DeleteObject(dib);
-        DeleteDC(mem);
-        ReleaseDC(NULL, screen);
+        SetEvent(job->release);
+        WaitForSingleObject(thread, INFINITE);
+        CloseHandle(thread);
         if (err) strncpy(err, "capture region is empty",
                          MSG_BUFSIZE - 1);
         return FALSE;
@@ -341,9 +554,9 @@ BOOL captureClientRegion(HWND hwnd, const RECT *sub,
 
     unsigned char *buf = malloc((size_t)w * h * 4);
     if (!buf) {
-        DeleteObject(dib);
-        DeleteDC(mem);
-        ReleaseDC(NULL, screen);
+        SetEvent(job->release);
+        WaitForSingleObject(thread, INFINITE);
+        CloseHandle(thread);
         if (err) strncpy(err, "out of memory", MSG_BUFSIZE - 1);
         return FALSE;
     }
@@ -353,13 +566,12 @@ BOOL captureClientRegion(HWND hwnd, const RECT *sub,
                (size_t)w * 4);
     }
 
-    DeleteObject(dib);
-    DeleteDC(mem);
-    ReleaseDC(NULL, screen);
+    SetEvent(job->release);
+    WaitForSingleObject(thread, INFINITE);
+    CloseHandle(thread);
 
     *outBgra = buf;
     *outW = w;
     *outH = h;
-    if (err) err[0] = '\0';
     return TRUE;
 }

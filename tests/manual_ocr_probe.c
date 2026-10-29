@@ -30,7 +30,7 @@ static void readRegion(OcrEngine *eng, HWND hwnd, int w, int h,
     char text[512], err[512];
     NormRect n = { nx, ny, nw, nh };
     rc = captureMapNorm(w, h, &n);
-    if (!captureClientRegion(hwnd, &rc, &bgra, &cw, &ch, err)) {
+    if (!captureClientRegion(hwnd, 0, &rc, &bgra, &cw, &ch, err)) {
         printf("  %s: capture fail %s\n", tag, err);
         return;
     }

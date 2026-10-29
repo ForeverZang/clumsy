@@ -172,7 +172,8 @@ static int readPhysicalRegion(OcrSession *s, size_t ri, char *text,
     unsigned char *bgra = NULL;
     int w = 0, h = 0;
     char localErr[MSG_BUFSIZE];
-    if (!s->captureFn(s->target.hwnd, &rc, &bgra, &w, &h, localErr)) {
+    if (!s->captureFn(s->target.hwnd, s->target.pid, &rc,
+                      &bgra, &w, &h, localErr)) {
         return REGION_CAPTURE_FAIL;
     }
     // PrintWindow success with a black/no-picture frame (locked desktop,
@@ -319,7 +320,8 @@ BOOL ocrSessionSeed(OcrSession *s, char err[MSG_BUFSIZE]) {
         unsigned char *bgra = NULL;
         int w = 0, h = 0;
         char localErr[MSG_BUFSIZE];
-        if (!s->captureFn(s->target.hwnd, &rc, &bgra, &w, &h, localErr)
+        if (!s->captureFn(s->target.hwnd, s->target.pid, &rc,
+                          &bgra, &w, &h, localErr)
             || captureFrameBlank(bgra, w, h)) {
             captureFreeBitmap(bgra); // NULL-safe; blank frame dropped
             continue;
