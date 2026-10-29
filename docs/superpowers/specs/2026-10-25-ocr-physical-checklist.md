@@ -469,3 +469,140 @@ WindowFromPoint 命中断言后输出 `OK: ui_simple`，新日志断言全部真
    底部消失、上限不膨胀，常驻档位行始终可见且值正确，日志框仍可选择复制、
    TOPLINE 始终钉在最新行。
 8. **150% DPI 下重复第 1~3 项**，确认常驻行不与日志框/CSV 行挤叠。
+
+## O. 停止后恢复编辑、毫秒时间戳/常驻行不截断、打开目录定位 CSV（2026-10-29 修复，真机目验项）
+
+真机复测 N 节交付后提出三点：(1) 「+ 添加区域」和规则编辑在影响期间锁定是对的，
+但**停止影响后仍然不可编辑**；(2) 日志时间戳要精确到**毫秒**，常驻「实时丢包率」
+行显示不全（尾部 `%` 被截），必须带单位完整可见；(3) 「打开目录」没有定位到真实
+日志目录、也没有选中 CSV 文件。
+
+### O.1 停止影响后控件永久禁用 —— 根因：PrintWindow 跨线程无限阻塞
+
+系统化排查（探针实证，非猜测）锁定根因链：
+1. `PrintWindow(PW_CLIENTONLY | PW_RENDERFULLCONTENT)` 在 OCR worker 线程执行，
+   它向目标窗口的 UI 线程**跨线程 SendMessage**；当 clumsy 自己的弱网使目标应用
+   UI 线程停止抽取消息时，该调用**永久阻塞**（一次性探针 probe_pw2：响应态基线
+   15ms 返回、像素正确；把目标 UI 线程停在自定义消息处理函数内后，PrintWindow
+   6 秒以上不返回，被守护进程杀掉）。
+2. worker 停在抓屏里，回不到 stopEvent 等待点；GUI 的「停止影响」回调经
+   `ocrAppStop → ocrWorkerStop` 以 **INFINITE** join worker → 整个停止回调冻结。
+3. `uiOcrSetRunning(FALSE)` 永远不执行，`g_configBody`/两张矩阵/按钮的
+   `ACTIVE=YES` 恢复全部停在半路，表现为停止后添加区域与规则编辑依旧灰着。
+   直接控件生命周期测试此前抓不到它，因为那只直接调 `uiOcrSetRunning`、从不经过
+   `ocrAppStop → ocrWorkerStop`。
+
+修复落在抓屏边界（`src/ocr_capture.c`，**仅抓屏层**，不动 packet/drop/filter/
+targeting，未知包放打铁律不受影响）：PrintWindow 改到短命 helper 线程执行，调用方
+**有界等待 1000ms**；超时只置位 release 事件并关闭自己的线程句柄后脱离，从此不再
+触碰可能仍被阻塞中的 PrintWindow 使用的 GDI 对象，helper 在 PrintWindow 终于返回
+后自行释放并把在途计数减回去；全局在途（含已超时未回收）抓屏**上限 2**，名额用
+`InterlockedIncrement` 原子预留，第三个 tick 起立即快速失败，不再向死窗口堆叠线程；
+helper 在成功/快速失败路径被 join（release 后只剩纯清理，微秒级），超时脱离路径
+从不被 join（停止路径也不 join），进程退出由系统回收。
+
+握手采用**单一所有者**协议（两轮独立评审曾否决过 done/abandoned 双分支方案：
+helper 在置 done 后才探测调用方是否放弃，超时边界上会出现双方都清理 → DC/DIB/job
+双重释放、计数减成负数，或双方都不清理 → ~8MB DIB 与名额永久泄漏）：
+- helper 线程在整个生命周期内是 DC/DIB/两个事件/job 结构/在途名额的**唯一所有者**：
+  `PrintWindow → 记录结果 → SetEvent(done) → WaitForSingleObject(release,INFINITE)
+  → destroyCaptureGdi → 关闭两事件 → free(job) → InterlockedDecrement → 退出`，
+  无任何所有权分支；
+- 调用方仅在 `CreateThread` 成功前拥有资源（失败走 `releaseUnstartedJob` 统一回滚
+  并归还名额）；线程启动后成功路径在 helper 停车期间完成 DIB 像素裁剪，再置 release
+  并 join；超时路径置 release 后脱离——release 是手动复位事件，**在 helper 进入等待
+  之前置位也不会丢失**，阻塞中的 PrintWindow 一返回清理就必定发生。
+- **helper 侧属主 PID 复验**（安全评审建议的纵深防御）：`captureClientRegion`
+  新增 `expectedPid` 参数（来自 pinned `CaptureWindow.pid`，经会话每拍
+  `captureTargetAlive` 闸门传入），helper 在 PrintWindow 前最后一步
+  `GetWindowThreadProcessId` 复验活 PID，不符即**失败闭合**（不抓屏，
+  `ERROR_INVALID_WINDOW_HANDLE`），堵死「闸门之后、发送之前 HWND 死亡并被
+  回收给别的进程」的实际竞态窗口。用户态检查无法与内核发送做成原子，这是
+  边界而非保证，已在注释中写明；`expectedPid=0` 仅留给不属主绑定的调用方。
+
+自动证据（tests 26–31，真实顶层窗口跑在专用 UI 线程上，用 `WM_APP+1` 停车消息
+模拟「UI 线程不再抽消息」的真实故障态，先 RED 后 GREEN）：
+- 26 响应态窗口仍经 helper 路径抓到非空画面（<5s）；
+- 27 停车后抓屏**有界失败**、无像素输出（修复前同一 fixture 进程永久挂起，9 秒
+  守护杀确认 RED）；
+- 28 第二次超时填满 2 个在途名额，第三次 **<500ms 快速失败**（不叠线程）；
+- 29 放开目标线程后脱离的 helper 自行回收、名额归还、抓屏恢复非空画面
+  （无迟到的 GDI/栈触碰）；
+- 30 响应态目标连续 100 次快速抓屏锤击，每次成功、画面非空、无双重释放；
+- 31a/31b 边界两侧用测试缝 `captureSetPrintTimeoutForTest` 注入截止期（不再赌
+  调度抖动）：2000ms 截止 vs 900ms 停车必成功且像素完好；300ms 截止 vs 700ms
+  停车必有界超时，停车结束后脱离 helper 自动归还名额、后续抓屏恢复。
+- 32 属主 PID 复验：对响应态窗口传入错误 pinned PID 连续 100 次请求必全部
+  失败闭合、不泄漏在途名额，随后以正确 PID 抓屏成功；0 = 显式不绑定的回退。
+旧实现在 31 上非确定性复现名额泄漏（第 2 次压测即断言失败），单一所有者协议
+连续 10 轮压测 10/10 通过（含 32 后再次 8 轮）。
+全套件 17/18 通过，唯一失败仍是锁屏环境性 WindowFromPoint 命中（见 M/L 节），
+envskip 副本输出 `OK: ui_simple`；改动生产文件 `-O2 -DNDEBUG -Wall -Wextra`
+零告警。
+
+评审记录的已知边界（LOW，判定保留、不为此加并发结构）：
+1. 在途名额是**进程全局**、不在每次开始时清零：第三方应用 UI 线程**永久**死锁
+   （弱网解除后仍永不抽消息、进程也不退出）时，两个名额会一直占到 clumsy 重启，
+   期间切换到别的健康窗口会快速失败；本投诉的故障态（clumsy 弱网停泵）在停止
+   影响后立即自愈（测试 29 锁定）。引入按会话重置需要跟踪脱离作业、反而增加
+   竞态面，YAGNI。
+2. 两个停车 helper 各持一张整客户区 32bpp DIB，4K 最大化窗口下最坏约 64MB，
+   目标进程退出即随 PrintWindow 中止而归还；上限 2 是刻意的资源边界。
+3. 提权进程在资源管理器外壳已死的退化环境下，explore 回退可能弹出提权的
+   Explorer 窗口（用户主动点击、仅打开本人目录，无提权漏洞），保留。
+
+### O.2 毫秒时间戳与常驻行截断（ui_ocr_log.c）
+
+- 前缀由 `HH:MM:SS` 改为 `HH:MM:SS.mmm`（运行态 `10:30:06.000 [丢包 50%] …`、
+  空闲态 `10:30:06.000 …`）；同一秒内可到达多行（100ms 排空），毫秒位负责可见
+  排序。前缀缓冲 64 → 96 字节，UTF-8 中文标记余量充足。
+- 常驻行 IupFlatLabel 在 map 后反复改 TITLE，自然宽度画布保持创建时宽度，较长
+  双语措辞（含尾部 `%`）被裁；改为 `EXPAND=HORIZONTAL` 占满整行并去掉 IupFill，
+  左对齐锚定（本 IUP 构建默认归一为 ALEFT:ACENTER，探针确认）。
+- 可视证据（生产控件、私有桌面一次性 harness，源码在 gitignored 的 build/tests）：
+  `screenshots/ocr-t9/gear-ms-zh-run.png` / `gear-ms-en-run.png`（运行态：
+  「实时丢包率：50%」「Live loss: 50%」完整可见、单位 `%` 不截断，七行日志全部
+  带毫秒），`gear-ms-zh-idle.png` / `gear-ms-en-idle.png`（停止态：常驻行 `--`，
+  顶部停止行 `10:30:06.000 [丢包 50%] … 已停止` 保留停止刻档位）。
+
+### O.3 打开目录定位真实 CSV（ui_ocr_log.c）
+
+旧实现 `ShellExecuteA(NULL,"open","explorer.exe","/select,\"...\"",…)`：ANSI 路径
+在中文用户名 `%LOCALAPPDATA%` 下会坏；提权进程向中完整性 Explorer 代理启动时
+`/select` 开关历史上会被丢弃，结果打开默认目录而非 CSV；首次运行前还直接静默
+no-op。改为：
+- UTF-8→UTF-16（`MultiByteToWideChar(CP_UTF8)`，截断/失败都返回空串、失败闭合，
+  测试缝 `uiOcrLogUtf8ToWideForTest` 锁死）；
+- 有 CSV 时 `ILCreateFromPathW` + `SHOpenFolderAndSelectItems`（宽字符、规范的
+  「打开父目录并选中该文件」）；COM 套间精确配平：`CoInitializeEx` 凡成功
+  （`S_OK` 与 `S_FALSE` 都增加本线程初始化计数）都配一次 `CoUninitialize`，
+  `RPC_E_CHANGED_MODE` 是失败、不配平且不在该套间调用 STA 的 shell API，
+  直接走回退；失败再退化为宽 `ShellExecuteW` 的 `explore` 动词打开**所在
+  目录**；
+- 首次运行前经 `ocrTimelineDefaultDir` 确保 `%LOCALAPPDATA%\clumsy\ocr-runs`
+  存在并打开该目录（exe 目录为最终回退）；所有 shell 拒绝（返回值 ≤32 的
+  SE_ERR_*、路径解析失败）都以双语行 `ocr.log.openDirFailed` 落进 OCR 日志，
+  按钮不再静默无效。
+目标路径测试缝 `uiOcrLogRevealTargetForTest`、UTF-16 转换缝与固定 LOCALAPPDATA
+fixture 在 envskip 套件中通过。
+
+### 真机目验
+
+1. **停止后恢复编辑（本投诉主项）**：选一个会被弱网拖到 UI 卡死的目标（如重连
+   演示 fixture + 高丢包），开始影响、看到 OCR 日志出现「抓取超时」后点「停止
+   影响」：停止回调必须在约 1–2 秒内返回（不再卡死整个窗口），随后「+ 添加区域」
+   「+ 新建规则组」、两张矩阵双击/选中即恢复可编辑；再开始→再停止循环 3 遍确认
+   稳定恢复。影响期间这些控件仍必须是灰的（锁定语义不回退）。
+2. **超时抓屏不吞档位、不丢日志**：目标卡死期间日志按既有节奏出现抓屏失败行且
+   带毫秒时间戳；目标恢复后 scan 行自动回来，无需重启；任务管理器观察线程数不随
+   卡死时长持续增长（在途上限 2）。
+3. **毫秒与单位（中英各一遍，150% DPI 重复）**：同一秒内连续多行显示不同
+   `.mmm`；常驻行 0%/50%/95% 三档及 `--` 均完整可见、尾部 `%` 不被截，运行中热
+   切换中英无裁切、无跳动。
+4. **打开目录**：跑完一次（CSV 已落盘）点「打开目录」，应弹出
+   `%LOCALAPPDATA%\clumsy\ocr-runs` 并**选中**本次 `ocr-run-*.csv`；中文用户名
+   账户与「以管理员身份运行」各验一遍；尚未跑过任何会话时点按钮，应打开（必要时
+   先创建）该 ocr-runs 目录而不是无反应；exe 旁回退目录（无 LOCALAPPDATA 的异常
+   环境）下按钮仍能打开所在目录。
+5. **铁律回归**：抓屏超时时序与抓屏失败计数不改变任何包处理；无法归属目标的包
+   全程照常放行（结合既有安全测试一并目验）。
