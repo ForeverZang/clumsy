@@ -55,6 +55,9 @@ static void runDirs(char *timelineDir, size_t dirCap,
 static void glueOnLoss(int percent, void *user) {
     char line[256];
     (void)user;
+    // The readout and the line tag update first, so this switch line is
+    // already stamped with the gear it announces.
+    uiOcrLogSetGear(percent);
     uiSimpleApplyExternalLoss(percent);
     snprintf(line, sizeof(line), tr("ocr.log.loss"), percent);
     uiOcrAppendLog(line);
@@ -108,6 +111,11 @@ static void glueOnEvent(const OcrSessionEvent *ev, void *user) {
     if (strcmp(ev->event, "rule_trigger") == 0) {
         const char *text = (ev->text && ev->text[0])
                            ? ev->text : tr("ocr.log.emptyText");
+        // Deliberate: within the firing tick the worker queues
+        // rule_trigger BEFORE loss_change (FIFO drain), so this line is
+        // stamped with the gear still in force when the text was seen;
+        // the immediately newer "loss switched" line carries the new
+        // gear, and the pair reads as the before/after of one switch.
         snprintf(line, sizeof(line), tr("ocr.log.trigger"),
                  name, text, ev->lossPercent);
         uiOcrAppendLog(line);
@@ -197,6 +205,12 @@ BOOL uiOcrGlueStart(int sliderPercent) {
     }
 
     g_runCfg = cfg;
+    // The readout starts at the slider gear BEFORE any line is logged,
+    // so the start line and every following scan line are stamped with
+    // the gear in force; a later worker loss_change updates it through
+    // glueOnLoss.
+    uiOcrLogSetGear(sliderPercent);
+
     char saveErr[MSG_BUFSIZE];
     if (!ocrConfigSave(g_configPath, &cfg, saveErr)) {
         uiOcrAppendLog(tr("ocr.error.configSave"));
@@ -213,7 +227,11 @@ BOOL uiOcrGlueStart(int sliderPercent) {
 void uiOcrGlueStop(void) {
     if (!ocrAppRunning()) return;
     ocrAppStop();
+    // The stop line keeps the last gear tag ("loss at that moment");
+    // only then does the readout return to idle, since loss is no
+    // longer applied once the affect session tears down.
     uiOcrAppendLog(tr("ocr.log.stop"));
+    uiOcrLogSetGear(-1);
     uiOcrSetRunning(FALSE);
 }
 

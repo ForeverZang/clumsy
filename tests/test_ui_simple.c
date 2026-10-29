@@ -861,6 +861,15 @@ int main(void) {
                     "session_start loss=0 source=initial_slider";
                 const char *second = "loss_change 0->95 source=ocr";
                 int b, i;
+                // Deterministic clock and language: every line carries a
+                // timestamp prefix, plus the live gear once a run drives it.
+                SYSTEMTIME fixedClock;
+                memset(&fixedClock, 0, sizeof(fixedClock));
+                fixedClock.wHour = 9;
+                fixedClock.wMinute = 8;
+                fixedClock.wSecond = 7;
+                i18nSetLang(LANG_EN);
+                uiOcrLogSetTimeForTest(&fixedClock);
                 for (b = 0; b < SIZES; b++) {
                     for (i = 0; i < SPRAY_ROUNDS; i++) {
                         slop[b][i] = malloc(bucket[b]);
@@ -872,22 +881,59 @@ int main(void) {
                     for (i = 0; i < SPRAY_ROUNDS; i++)
                         free(slop[b][i]);
 
+                // Before the first run the live-loss readout is idle and
+                // the line prefix is timestamp only.
+                assert(strstr(IupGetAttribute(uiOcrLogGearLabelForTest(),
+                                              "TITLE"),
+                              "Live loss: --") != NULL);
                 uiOcrAppendLog(first);
                 assert(strcmp(IupGetAttribute(uiOcrLogForTest(), "VALUE"),
-                              first) == 0);
+                              "09:08:07 " "session_start loss=0 "
+                              "source=initial_slider") == 0);
                 // Newest line stays on top: TOPLINE pins the view at line 1.
                 assert(IupGetInt(uiOcrLogForTest(), "TOPLINE") == 1);
+
+                // A gear change updates the co-located readout and stamps
+                // every following line with the loss in force at that moment.
+                uiOcrLogSetGear(60);
+                assert(strcmp(IupGetAttribute(uiOcrLogGearLabelForTest(),
+                                              "TITLE"),
+                              "Live loss: 60%") == 0);
                 uiOcrAppendLog(second);
                 {
                     const char *v =
                         IupGetAttribute(uiOcrLogForTest(), "VALUE");
                     // Reverse chronological order: the second append is
                     // now the head line, the first append below it.
-                    assert(strncmp(v, second, strlen(second)) == 0);
-                    assert(v[strlen(second)] == '\n');
-                    assert(strcmp(v + strlen(second) + 1, first) == 0);
+                    assert(strcmp(v,
+                            "09:08:07 [loss 60%] loss_change 0->95 "
+                            "source=ocr\n"
+                            "09:08:07 session_start loss=0 "
+                            "source=initial_slider") == 0);
                 }
                 assert(IupGetInt(uiOcrLogForTest(), "TOPLINE") == 1);
+
+                // Bilingual prefix + readout after a live language switch.
+                i18nSetLang(LANG_ZH);
+                uiOcrLogRetranslate();
+                assert(strcmp(IupGetAttribute(uiOcrLogGearLabelForTest(),
+                                              "TITLE"),
+                              "实时丢包率：60%") == 0);
+                uiOcrAppendLog("zh-line");
+                {
+                    const char *v =
+                        IupGetAttribute(uiOcrLogForTest(), "VALUE");
+                    assert(strncmp(v, "09:08:07 [丢包 60%] zh-line\n",
+                                   strlen("09:08:07 [丢包 60%] zh-line\n"))
+                           == 0);
+                }
+
+                // Stop returns the readout to idle (loss is no longer
+                // applied); later lines carry the timestamp prefix only.
+                uiOcrLogSetGear(-1);
+                assert(strcmp(IupGetAttribute(uiOcrLogGearLabelForTest(),
+                                              "TITLE"),
+                              "实时丢包率：--") == 0);
 
                 // Cap: past 500 lines the OLDEST tail lines drop while
                 // the newest line stays at the head.
@@ -901,12 +947,15 @@ int main(void) {
                         IupGetAttribute(uiOcrLogForTest(), "VALUE");
                     size_t lines = 1;
                     const char *p;
-                    assert(strncmp(v, "L599\n", 5) == 0);
+                    assert(strncmp(v, "09:08:07 L599\n", 12) == 0);
                     for (p = v; *p; p++)
                         if (*p == '\n') lines++;
                     assert(lines == 500);
                     assert(strcmp(v + strlen(v) - 4, "L100") == 0);
                 }
+
+                uiOcrLogSetTimeForTest(NULL);
+                i18nSetLang(LANG_ZH); // language state on block entry
             }
 
             // External loss from OCR mirrors onto slider fraction 0.07,

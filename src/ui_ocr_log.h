@@ -15,9 +15,29 @@
 // plus the open-folder button). Returns the vbox holding both.
 Ihandle *uiOcrLogBuild(void);
 
-// Append one human-readable line, keeping a bounded tail and the newest
-// line visible.
+// Append one human-readable line. A timestamp is prepended to every
+// line; while an automation run drives the gear (see uiOcrLogSetGear)
+// the loss in force at that moment is prepended too, so each scrolling
+// recognition line answers "what was seen, and what the loss was, at
+// that moment". Keeps a bounded head (oldest tail lines drop past the
+// cap) with the newest line pinned on top.
 void uiOcrAppendLog(const char *line);
+
+// Set the live loss percentage (0..100) shown by the co-located
+// readout and stamped on subsequent log lines. -1 returns the readout
+// to its idle state (no run / run stopped) and drops the gear tag from
+// the prefix.
+void uiOcrLogSetGear(int percent);
+
+// Refresh the gear readout wording after a live language switch.
+void uiOcrLogRetranslate(void);
+
+// Test seam: freeze the timestamp prefix at the given local time; NULL
+// restores the wall clock.
+void uiOcrLogSetTimeForTest(const SYSTEMTIME *fixed);
+
+// Test seam: the always-visible live-loss readout above the multiline.
+Ihandle *uiOcrLogGearLabelForTest(void);
 
 // Show the current run's CSV path under the log (also the /select target
 // for the open-folder button).

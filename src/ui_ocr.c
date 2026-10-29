@@ -405,6 +405,7 @@ void uiOcrShowError(const char *keyOrText) {
 void uiOcrRetranslate(void) {
     refreshWindowLabel();
     uiOcrGroupsRetranslate();
+    uiOcrLogRetranslate();
     if (g_gateError != NULL && IupGetInt(g_gateError, "VISIBLE") != 0) {
         IupStoreAttribute(g_gateError, "TITLE", tr("ocr.blockedApp"));
     }
