@@ -1,6 +1,8 @@
 #ifndef CLUMSY_UI_OCR_LOG_H
 #define CLUMSY_UI_OCR_LOG_H
 
+#include <wchar.h>
+
 #include "common.h"
 
 /*
@@ -48,5 +50,14 @@ Ihandle *uiOcrLogForTest(void);
 
 // Test seam: the "open folder" flat button next to the CSV path.
 Ihandle *uiOcrLogOpenDirButtonForTest(void);
+
+// Test seam: UTF-8 -> UTF-16 conversion used by the reveal-in-Explorer
+// path. Returns character count excluding NUL; 0 on failure/truncation.
+int uiOcrLogUtf8ToWideForTest(const char *utf8, wchar_t *out, int cap);
+
+// Test seam: filesystem target the open-folder button reveals -- the
+// current run's CSV, or the default ocr-runs directory before the first
+// run. Fills buf and returns buf, or NULL when neither can be resolved.
+const char *uiOcrLogRevealTargetForTest(char *buf, size_t cap);
 
 #endif // CLUMSY_UI_OCR_LOG_H

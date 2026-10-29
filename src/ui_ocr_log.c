@@ -1,6 +1,8 @@
 #include <winsock2.h>
 #include <windows.h>
 #include <shellapi.h>
+#include <shlobj.h>
+#include <objbase.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -9,6 +11,7 @@
 #include "iup.h"
 #include "common.h"
 #include "i18n.h"
+#include "ocr_timeline.h"
 #include "ui_ocr_log.h"
 
 #if defined(CLUMSY_OCR)
@@ -84,27 +87,29 @@ static void rebuildLog(void) {
     IupSetInt(g_log, "TOPLINE", 1);
 }
 
-// "HH:MM:SS [丢包 60%] " while a run drives the gear; timestamp only
-// when idle. 64 covers the UTF-8 tag at three digits with room to spare.
+// "HH:MM:SS.mmm [丢包 60%] " while a run drives the gear; timestamp with
+// milliseconds only when idle. 96 covers the UTF-8 tag at three digits
+// with room to spare; lines can arrive within the same second, so the
+// millisecond field is what orders them visually.
 static void buildPrefix(char *out, size_t cap) {
     SYSTEMTIME st;
     currentLocalTime(&st);
     if (g_gear >= 0) {
         char tag[32];
         snprintf(tag, sizeof(tag), tr("ocr.log.gearTag"), g_gear);
-        snprintf(out, cap, "%02u:%02u:%02u [%s] ",
+        snprintf(out, cap, "%02u:%02u:%02u.%03u [%s] ",
                  (unsigned)st.wHour, (unsigned)st.wMinute,
-                 (unsigned)st.wSecond, tag);
+                 (unsigned)st.wSecond, (unsigned)st.wMilliseconds, tag);
     } else {
-        snprintf(out, cap, "%02u:%02u:%02u ",
+        snprintf(out, cap, "%02u:%02u:%02u.%03u ",
                  (unsigned)st.wHour, (unsigned)st.wMinute,
-                 (unsigned)st.wSecond);
+                 (unsigned)st.wSecond, (unsigned)st.wMilliseconds);
     }
 }
 
 void uiOcrAppendLog(const char *line) {
     char *grown;
-    char prefix[64];
+    char prefix[96];
     char *full;
     size_t lineLen, prefixLen;
     size_t oldLen = g_logText != NULL ? strlen(g_logText) : 0;
@@ -148,12 +153,129 @@ void uiOcrAppendLog(const char *line) {
     free(full);
 }
 
+// UTF-8 -> UTF-16 for the wide shell APIs. Returns the character count
+// excluding the terminating NUL; 0 on invalid input or truncation, with
+// an empty string written so callers can never act on a half path.
+static int utf8ToWide(const char *s, wchar_t *out, int cap) {
+    int n;
+    if (s == NULL || out == NULL || cap <= 0) return 0;
+    out[0] = L'\0';
+    n = MultiByteToWideChar(CP_UTF8, 0, s, -1, out, cap);
+    if (n <= 0) {
+        out[0] = L'\0';
+        return 0;
+    }
+    return n - 1;
+}
+
+// What the button reveals: the current CSV once a run has produced one,
+// otherwise the default ocr-runs directory (created on demand), so the
+// button is never a silent no-op. Returns buf, or NULL if even the
+// executable-directory fallback is unavailable.
+static const char *revealTarget(char *buf, size_t cap) {
+    char fallback[1024];
+    if (buf == NULL || cap == 0) return NULL;
+    buf[0] = '\0';
+    if (g_csvPath[0] != '\0') {
+        strncpy(buf, g_csvPath, cap - 1);
+        buf[cap - 1] = '\0';
+        return buf;
+    }
+    if (ocrTimelineDefaultDir(buf, cap, fallback, sizeof(fallback)))
+        return buf;
+    if (fallback[0] != '\0') {
+        strncpy(buf, fallback, cap - 1);
+        buf[cap - 1] = '\0';
+        return buf;
+    }
+    return NULL;
+}
+
+// The reveal button must never fail silently: every refused shell call
+// lands a line in the OCR log with the shell error code.
+static void logOpenDirError(unsigned long code) {
+    char msg[160];
+    snprintf(msg, sizeof(msg), tr("ocr.log.openDirFailed"), code);
+    uiOcrAppendLog(msg);
+}
+
+// Local-resolution failure (no run directory, no backslash in the CSV
+// path) is not a shell error, so it gets its own wording instead of
+// "system error 0".
+static void logOpenDirUnavailable(void) {
+    uiOcrAppendLog(tr("ocr.log.openDirUnavailable"));
+}
+
+// Open a directory in Explorer via the wide explore verb. ShellExecuteW
+// returns an HINSTANCE at or below 32 on failure (the SE_ERR_* code), not
+// a usable instance.
+static BOOL exploreDir(const wchar_t *dir) {
+    HINSTANCE r = ShellExecuteW(NULL, L"explore", dir, NULL, NULL,
+                                SW_SHOWNORMAL);
+    if ((ULONG_PTR)r <= 32) {
+        logOpenDirError((unsigned long)(ULONG_PTR)r);
+        return FALSE;
+    }
+    return TRUE;
+}
+
 static int openDirCb(Ihandle *ih) {
-    char args[600];
+    char target[1024];
+    wchar_t wtarget[1024];
+    const char *path;
     UNREFERENCED_PARAMETER(ih);
-    if (g_csvPath[0] == '\0') return IUP_DEFAULT;
-    snprintf(args, sizeof(args), "/select,\"%s\"", g_csvPath);
-    ShellExecuteA(NULL, "open", "explorer.exe", args, NULL, SW_SHOWNORMAL);
+
+    path = revealTarget(target, sizeof(target));
+    if (path == NULL
+        || !utf8ToWide(path, wtarget,
+                       (int)(sizeof(wtarget) / sizeof(wtarget[0])))) {
+        logOpenDirUnavailable();
+        return IUP_DEFAULT;
+    }
+
+    if (g_csvPath[0] != '\0') {
+        // Canonical "open the folder and select the file" call. Wide, so
+        // non-ANSI paths (a Chinese user name inside %LOCALAPPDATA%)
+        // survive; it also brokers from an elevated clumsy to the user's
+        // medium-IL Explorer, where ShellExecuteA("explorer.exe",
+        // "/select,...") historically had its switches dropped and
+        // opened a default folder instead of revealing the CSV.
+        PIDLIST_ABSOLUTE pidl = ILCreateFromPathW(wtarget);
+        if (pidl != NULL) {
+            // IUP/OLE normally owns apartment init on this GUI thread.
+            // Every SUCCEEDED CoInitializeEx (S_OK or S_FALSE) bumps the
+            // per-thread refcount and gets one CoUninitialize; a failure
+            // such as RPC_E_CHANGED_MODE adds nothing and means the STA
+            // shell API must not be called here -- fall through.
+            HRESULT com = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+            HRESULT hr = E_FAIL;
+            if (SUCCEEDED(com)) {
+                // S_OK and S_FALSE both bump this thread's init count, so
+                // both must be paired; the apartment only actually tears
+                // down when the last reference (e.g. IUP/OLE's own init)
+                // is balanced. RPC_E_CHANGED_MODE is a failure: no pair.
+                hr = SHOpenFolderAndSelectItems(pidl, 0, NULL, 0);
+                CoUninitialize();
+            }
+            ILFree(pidl);
+            if (SUCCEEDED(hr)) return IUP_DEFAULT;
+        }
+        // Select unavailable (e.g. broker refusal or changed apartment):
+        // open the containing folder itself through the wide verb.
+        {
+            wchar_t *slash = wcsrchr(wtarget, L'\\');
+            if (slash != NULL && slash != wtarget) {
+                *slash = L'\0';
+                exploreDir(wtarget);
+            } else {
+                logOpenDirUnavailable();
+            }
+        }
+        return IUP_DEFAULT;
+    }
+
+    // Before the first run: open the ocr-runs directory itself.
+    exploreDir(wtarget);
     return IUP_DEFAULT;
 }
 
@@ -173,8 +295,16 @@ Ihandle *uiOcrLogBuild(void) {
     g_gearLabel = IupFlatLabel("");
     IupSetAttribute(g_gearLabel, "FGCOLOR", "30 30 30");
     IupSetAttribute(g_gearLabel, "FONT", "Segoe UI, 12");
+    // The title is rewritten after map on every gear change and after a
+    // live language switch; a natural-width canvas keeps its creation
+    // width and clips the longer wording (up to and including the '%'
+    // unit). Spanning the row reserves room for any bilingual wording at
+    // any gear, and left alignment keeps the readout anchored.
+    // Default alignment is "ALEFT:ACENTER" (probe-verified on this IUP
+    // build), so the text stays anchored once it spans the full row.
+    IupSetAttribute(g_gearLabel, "EXPAND", "HORIZONTAL");
     renderGearLabel();
-    gearRow = IupHbox(g_gearLabel, IupFill(), NULL);
+    gearRow = IupHbox(g_gearLabel, NULL);
 
     g_log = IupMultiLine(NULL);
     IupSetAttribute(g_log, "READONLY", "YES");
@@ -205,6 +335,13 @@ Ihandle *uiOcrLogOpenDirButtonForTest(void) {
     return g_openDirBtn;
 }
 
+int uiOcrLogUtf8ToWideForTest(const char *utf8, wchar_t *out, int cap) {
+    return utf8ToWide(utf8, out, cap);
+}
+const char *uiOcrLogRevealTargetForTest(char *buf, size_t cap) {
+    return revealTarget(buf, cap);
+}
+
 #else // !CLUMSY_OCR — no-op stubs for builds without OCR
 
 #include <stddef.h>
@@ -218,5 +355,11 @@ Ihandle *uiOcrLogGearLabelForTest(void) { return NULL; }
 void uiOcrSetCsvPath(const char *path) { (void)path; }
 Ihandle *uiOcrLogForTest(void) { return NULL; }
 Ihandle *uiOcrLogOpenDirButtonForTest(void) { return NULL; }
+int uiOcrLogUtf8ToWideForTest(const char *utf8, wchar_t *out, int cap) {
+    (void)utf8; (void)out; (void)cap; return 0;
+}
+const char *uiOcrLogRevealTargetForTest(char *buf, size_t cap) {
+    (void)buf; (void)cap; return NULL;
+}
 
 #endif // CLUMSY_OCR

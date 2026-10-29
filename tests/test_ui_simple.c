@@ -9,6 +9,7 @@
 #include <string.h>
 #include <assert.h>
 #include <math.h>
+#include <wchar.h>
 
 #include "common.h"
 #include "targeting.h"
@@ -883,13 +884,22 @@ int main(void) {
                         free(slop[b][i]);
 
                 // Before the first run the live-loss readout is idle and
-                // the line prefix is timestamp only.
+                // the line prefix is timestamp only, millisecond precise.
+                // The readout spans its whole row and is left-aligned: a
+                // title set after map (or after a zh/en switch) must never
+                // clip the trailing '%' unit.
                 assert(strstr(IupGetAttribute(uiOcrLogGearLabelForTest(),
                                               "TITLE"),
                               "Live loss: --") != NULL);
+                assert(strstr(IupGetAttribute(uiOcrLogGearLabelForTest(),
+                                              "EXPAND"),
+                              "HORIZONTAL") != NULL);
+                assert(strncmp(IupGetAttribute(uiOcrLogGearLabelForTest(),
+                                               "ALIGNMENT"), "ALEFT", 5)
+                       == 0);
                 uiOcrAppendLog(first);
                 assert(strcmp(IupGetAttribute(uiOcrLogForTest(), "VALUE"),
-                              "09:08:07 " "session_start loss=0 "
+                              "09:08:07.000 " "session_start loss=0 "
                               "source=initial_slider") == 0);
                 // Newest line stays on top: TOPLINE pins the view at line 1.
                 assert(IupGetInt(uiOcrLogForTest(), "TOPLINE") == 1);
@@ -907,9 +917,9 @@ int main(void) {
                     // Reverse chronological order: the second append is
                     // now the head line, the first append below it.
                     assert(strcmp(v,
-                            "09:08:07 [loss 60%] loss_change 0->95 "
+                            "09:08:07.000 [loss 60%] loss_change 0->95 "
                             "source=ocr\n"
-                            "09:08:07 session_start loss=0 "
+                            "09:08:07.000 session_start loss=0 "
                             "source=initial_slider") == 0);
                 }
                 assert(IupGetInt(uiOcrLogForTest(), "TOPLINE") == 1);
@@ -924,8 +934,8 @@ int main(void) {
                 {
                     const char *v =
                         IupGetAttribute(uiOcrLogForTest(), "VALUE");
-                    assert(strncmp(v, "09:08:07 [丢包 60%] zh-line\n",
-                                   strlen("09:08:07 [丢包 60%] zh-line\n"))
+                    assert(strncmp(v, "09:08:07.000 [丢包 60%] zh-line\n",
+                                   strlen("09:08:07.000 [丢包 60%] zh-line\n"))
                            == 0);
                 }
 
@@ -935,6 +945,16 @@ int main(void) {
                 assert(strcmp(IupGetAttribute(uiOcrLogGearLabelForTest(),
                                               "TITLE"),
                               "实时丢包率：--") == 0);
+
+                // Milliseconds render zero-padded to three digits.
+                fixedClock.wMilliseconds = 42;
+                uiOcrLogSetTimeForTest(&fixedClock);
+                uiOcrAppendLog("ms-line");
+                assert(strncmp(IupGetAttribute(uiOcrLogForTest(), "VALUE"),
+                               "09:08:07.042 ms-line\n",
+                               strlen("09:08:07.042 ms-line\n")) == 0);
+                fixedClock.wMilliseconds = 0;
+                uiOcrLogSetTimeForTest(&fixedClock);
 
                 // Cap: past 500 lines the OLDEST tail lines drop while
                 // the newest line stays at the head.
@@ -948,7 +968,7 @@ int main(void) {
                         IupGetAttribute(uiOcrLogForTest(), "VALUE");
                     size_t lines = 1;
                     const char *p;
-                    assert(strncmp(v, "09:08:07 L599\n", 12) == 0);
+                    assert(strncmp(v, "09:08:07.000 L599\n", 16) == 0);
                     for (p = v; *p; p++)
                         if (*p == '\n') lines++;
                     assert(lines == 500);
@@ -957,6 +977,53 @@ int main(void) {
 
                 uiOcrLogSetTimeForTest(NULL);
                 i18nSetLang(LANG_ZH); // language state on block entry
+            }
+
+            // Open-folder target: the current run's CSV once a run has
+            // started; before the first run the default ocr-runs
+            // directory, so the button is never a silent no-op.
+            {
+                char target[1024];
+                char appdata[512];
+                char savedEnvBuf[1024];
+                const char *savedEnv = getenv("LOCALAPPDATA");
+                const char *t;
+                if (savedEnv) {
+                    strncpy(savedEnvBuf, savedEnv,
+                            sizeof(savedEnvBuf) - 1);
+                    savedEnvBuf[sizeof(savedEnvBuf) - 1] = '\0';
+                }
+                // The MSYS login shell exports LOCALAPPDATA empty; pin a
+                // fresh base exactly like test_ocr_timeline does.
+                GetFullPathNameA("build/tests/reveal_appdata",
+                                 sizeof(appdata), appdata, NULL);
+                _putenv_s("LOCALAPPDATA", appdata);
+                t = uiOcrLogRevealTargetForTest(target, sizeof(target));
+                assert(t != NULL);
+                assert(strstr(t, "\\clumsy\\ocr-runs") != NULL);
+                uiOcrSetCsvPath("C:\\Users\\qa\\AppData\\Local\\clumsy"
+                                "\\ocr-runs\\ocr-run-x.csv");
+                t = uiOcrLogRevealTargetForTest(target, sizeof(target));
+                assert(t != NULL);
+                assert(strcmp(t, "C:\\Users\\qa\\AppData\\Local\\clumsy"
+                                "\\ocr-runs\\ocr-run-x.csv") == 0);
+                uiOcrSetCsvPath("");
+                if (savedEnv) _putenv_s("LOCALAPPDATA", savedEnvBuf);
+                else _putenv_s("LOCALAPPDATA", "");
+            }
+
+            // The reveal path converts UTF-8 to UTF-16 itself: with a
+            // non-ANSI (e.g. Chinese) user name the old ShellExecuteA
+            // garbled the path and Explorer never selected the file.
+            {
+                wchar_t w[64];
+                int n = uiOcrLogUtf8ToWideForTest(
+                            "C:\\Users\\仓库\\ocr-run-1.csv", w, 64);
+                assert(n == (int)wcslen(L"C:\\Users\\仓库\\ocr-run-1.csv"));
+                assert(wcscmp(w, L"C:\\Users\\仓库\\ocr-run-1.csv") == 0);
+                // Truncation fails closed instead of dropping the NUL.
+                assert(uiOcrLogUtf8ToWideForTest("abc", w, 2) == 0);
+                assert(w[0] == L'\0');
             }
 
             // Real-time delivery regression: the glue's 100 ms drain
@@ -1276,6 +1343,53 @@ int main(void) {
                 // internals, is still worth pinning at the table level).
                 assert(isMapped(uiOcrRegionsMatrixForTest()));
                 assert(isMapped(uiOcrGroupsMatrixForTest()));
+
+                // Native enable lifecycle on the REAL mapped HWNDs (real
+                // machine report: after Stop, "+ 添加区域" stayed grayed
+                // and rule-group editing stayed dead). Pre-map ACTIVE
+                // round-trips pass regardless of what the container
+                // cascade did to each leaf HWND, so drive Start/Stop
+                // against the live dialog and read IsWindowEnabled.
+                {
+                    HWND nativeHwnd(Ihandle *e) {
+                        const char *h = IupGetAttribute(e, "HWND");
+                        if (h != NULL && h != (const char *)(UINT_PTR)-1)
+                            return (HWND)(UINT_PTR)h;
+                        h = IupGetAttribute(e, "WID");
+                        if (h != NULL && h != (const char *)(UINT_PTR)-1)
+                            return (HWND)(UINT_PTR)h;
+                        return NULL;
+                    }
+                    CaptureWindow pw2;
+                    HWND hAdd, hNew, hRm, hGm;
+                    memset(&pw2, 0, sizeof(pw2));
+                    pw2.hwnd = (HWND)(INT_PTR)0x5252;
+                    strcpy(pw2.title, "mapped fixture");
+                    pw2.width = 400;
+                    pw2.height = 300;
+                    uiOcrSetPickedWindow(&pw2);
+                    hAdd = nativeHwnd(addBtn);
+                    hNew = nativeHwnd(uiOcrGroupsNewGroupButtonForTest());
+                    hRm = nativeHwnd(uiOcrRegionsMatrixForTest());
+                    hGm = nativeHwnd(uiOcrGroupsMatrixForTest());
+                    assert(hAdd != NULL && hNew != NULL
+                           && hRm != NULL && hGm != NULL);
+                    assert(IsWindowEnabled(hAdd));
+                    assert(IsWindowEnabled(hNew));
+                    assert(IsWindowEnabled(hRm));
+                    assert(IsWindowEnabled(hGm));
+                    uiOcrSetRunning(TRUE);
+                    assert(!IsWindowEnabled(hAdd));
+                    assert(!IsWindowEnabled(hNew));
+                    assert(!IsWindowEnabled(hRm));
+                    assert(!IsWindowEnabled(hGm));
+                    uiOcrSetRunning(FALSE);
+                    assert(IsWindowEnabled(hAdd));
+                    assert(IsWindowEnabled(hNew));
+                    assert(IsWindowEnabled(hRm));
+                    assert(IsWindowEnabled(hGm));
+                    uiOcrSetPickedWindow(NULL);
+                }
 
                 // "Add region" after show must grow the live table
                 // immediately (2 populated regions -> row 3) instead of
