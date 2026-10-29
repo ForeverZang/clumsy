@@ -152,7 +152,10 @@ BOOL uiOcrGlueInit(void) {
     g_timer = IupTimer();
     if (!g_timer) return FALSE;
     IupSetAttribute(g_timer, "TIME", GLUE_DRAIN_MS);
-    IupSetCallback(g_timer, "TIME_CB", (Icallback)drainCb);
+    // IUP 3.30 dispatches IupTimer through "ACTION_CB" only; "TIME_CB"
+    // is silently stored as a dead attribute, which froze every queued
+    // event until Stop's explicit drain (no real-time log or switching).
+    IupSetCallback(g_timer, "ACTION_CB", (Icallback)drainCb);
     IupSetAttribute(g_timer, "RUN", "YES");
     return TRUE;
 }
@@ -244,6 +247,16 @@ void uiOcrGlueCleanup(void) {
     }
 }
 
+int uiOcrGlueTimerWiredForTest(void) {
+    const char *run = g_timer ? IupGetAttribute(g_timer, "RUN") : NULL;
+    // Compare the exact callback, not just any callback: the right
+    // attribute name with the wrong function would re-freeze delivery
+    // yet pass a non-NULL check; RUN must also be YES.
+    return g_timer != NULL
+        && IupGetCallback(g_timer, "ACTION_CB") == (Icallback)drainCb
+        && run != NULL && strcmp(run, "YES") == 0;
+}
+
 #else // !CLUMSY_OCR — OCR block compiled out
 
 BOOL uiOcrGlueInit(void) { return TRUE; }
@@ -251,5 +264,6 @@ void uiOcrGlueLoadSavedConfig(void) {}
 BOOL uiOcrGlueStart(int sliderPercent) { (void)sliderPercent; return TRUE; }
 void uiOcrGlueStop(void) {}
 void uiOcrGlueCleanup(void) {}
+int uiOcrGlueTimerWiredForTest(void) { return 0; }
 
 #endif // CLUMSY_OCR

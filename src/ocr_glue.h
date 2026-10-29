@@ -35,4 +35,11 @@ void uiOcrGlueStop(void);
 // Process teardown: stop any run and destroy the timer.
 void uiOcrGlueCleanup(void);
 
+// Test seam: TRUE once the drain timer exists, RUN=YES, and carries
+// drainCb under the name IUP actually dispatches ("ACTION_CB"). A
+// misspelled callback attribute (IUP 3.30 silently stores it unused),
+// a wrong callback, or a stopped timer freezes every queued
+// recognition/gear event until Stop's explicit drain flushes the queue.
+int uiOcrGlueTimerWiredForTest(void);
+
 #endif // CLUMSY_OCR_GLUE_H

@@ -20,6 +20,7 @@
 #include "ui_ocr_groups.h"
 #include "ui_picker.h"
 #include "ocr_app.h"
+#include "ocr_glue.h"
 #include "iup.h"
 #include "iupcontrols.h"
 
@@ -957,6 +958,17 @@ int main(void) {
                 uiOcrLogSetTimeForTest(NULL);
                 i18nSetLang(LANG_ZH); // language state on block entry
             }
+
+            // Real-time delivery regression: the glue's 100 ms drain
+            // timer must be wired under "ACTION_CB" — the only callback
+            // name IupTimer dispatches. A misspelled name (e.g. TIME_CB)
+            // is silently stored as a dead attribute, so scan/trigger/
+            // gear events queue all session and flush only at Stop.
+            assert(uiOcrGlueTimerWiredForTest() == 0);
+            assert(uiOcrGlueInit() == TRUE);
+            assert(uiOcrGlueTimerWiredForTest() != 0);
+            uiOcrGlueCleanup();
+            assert(uiOcrGlueTimerWiredForTest() == 0);
 
             // External loss from OCR mirrors onto slider fraction 0.07,
             // permyriad 700 and 7% label.
