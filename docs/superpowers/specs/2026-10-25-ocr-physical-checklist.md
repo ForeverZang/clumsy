@@ -409,6 +409,18 @@ packet/drop/filter/targeting 代码，「无法归属的未知包一律放行」
   前缀在 64 字节定长缓冲内组成（UTF-8 中文标记 + 三位百分比余量充足），完整
   行经带失败释放检查的 malloc 草稿拼接后再进入既有缓冲。
 
+**2026-10-29 热修（真机复测发现的断链，优先级高于上文背景描述）**：N 节交付后
+真机报告「运行时日志不实时，按停止才一次性涌出」。根因不在会话/队列层，而在
+glue 的 100ms 排空定时器：`IupSetCallback(g_timer, "TIME_CB", …)` 用错了回调
+属性名——IUP 3.30 的 IupTimer 只派发 `"ACTION_CB"`（一次性诊断实证：700ms 内
+ACTION_CB 触发 6 次、TIME_CB 0 次；错误名字会被当成普通自定义属性静默保存）。
+于是运行期间 worker 照常入队，但 UI 线程从不排空，scan/触发/切档事件全部积压，
+只有停止路径 `ocrAppStop()` 里的显式 `ocrWorkerDrain` 一次性吐出；**这也意味着
+修复前 OCR 实时切档在运行期间同样没有到达滑块/内核**（同样积压到停止才执行，
+那时拦截已在拆除）。修复为一行属性名改正，另加测试缝
+`uiOcrGlueTimerWiredForTest`（断言 init 后定时器在 ACTION_CB 上确有回调、
+cleanup 后为空）锁死该回归，非 OCR 构建提供返回 0 的桩。
+
 自动证据：`test_ui_simple` 日志镜像块在固定时钟（测试时钟缝
 `uiOcrLogSetTimeForTest`）与固定语言下断言——初始档位行为 `Live loss: --`、
 首行仅时间戳前缀、TOPLINE=1；`SetGear(60)` 后档位行为 `Live loss: 60%` 且新
